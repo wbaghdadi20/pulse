@@ -89,7 +89,9 @@ browsable API.
 | `GET /monitors/<id>/`          | get one monitor              | 200     | 404      |
 | `PATCH /monitors/<id>/`        | change some fields           | 200     | 400, 404, 409 |
 | `DELETE /monitors/<id>/`       | delete a monitor             | 204     | 404      |
-| `POST /monitors/<id>/check/`   | call the monitor's URL once  | 200     | 404      |
+| `POST /monitors/<id>/check/`   | call the monitor's URL once and record the result | 200 | 404 |
+| `GET /monitors/<id>/uptime/?days=7\|30\|90` | uptime %, p95 latency and check count | 200 | 400, 404 |
+| `POST /monitors/<id>/incidents/` | open an incident by hand   | 201     | 404, 409 |
 
 Example:
 
@@ -121,6 +123,116 @@ Idempotent means calling it twice leaves the system in the same state as calling
 | `DELETE /monitors/<id>/` | yes     | after the first call the monitor is gone, and a second call changes nothing. The *response* differs (204, then 404), but idempotency is about the effect, not the response |
 | `POST /monitors/`    | no          | each call tries to create a new monitor (the second one gets 409 only because names are unique) |
 | `POST /monitors/<id>/check/` | no  | each call makes a new request to the target and records a new result |
+
+## Database
+
+Postgres, through the Django ORM. Tables: `monitors`, `checks` (one row per check
+result) and `incidents` (one row per outage; `resolved_at` is empty while it's open).
+
+| Command (prefix with `docker compose exec api`) | What it does |
+| ------------------------------------------------ | ------------ |
+| `python manage.py migrate`                        | apply all migrations (on an empty database: creates every table and index) |
+| `python manage.py makemigrations`                 | generate a migration after changing `models.py` |
+| `python manage.py sqlmigrate monitors 0002`       | show the SQL a migration will run |
+| `python manage.py seed_checks`                    | insert 500,000 fake checks for 10 `seed-N` monitors over the last 90 days (`--count`, `--monitors` to change) |
+
+Change the schema only through migrations, never by hand in `psql`, so every
+database ends up identical.
+
+Open a SQL shell: `docker compose exec postgres psql -U <user> <db>`.
+
+### Uptime query and its index
+
+`GET /monitors/<id>/uptime/` runs a single aggregate query; no check rows are
+loaded into Python. This is the SQL the ORM generates (`<since>` = now − days):
+
+```sql
+SELECT AVG(("checks"."ok")::integer) AS "up_ratio",
+       percentile_cont(0.95) WITHIN GROUP (ORDER BY "checks"."latency_ms") AS "p95_latency_ms",
+       COUNT("checks"."id") AS "checks"
+FROM "checks"
+WHERE ("checks"."checked_at" > <since> AND "checks"."monitor_id" = 4)
+```
+
+`EXPLAIN ANALYZE` on 500,000 seeded checks, 7 days, one monitor (3,899 matching rows):
+
+**Before** (no index on `checks`):
+
+```
+Aggregate  (cost=9311.88..9311.89 rows=1 width=48) (actual time=10.646..12.674 rows=1 loops=1)
+  ->  Gather  (cost=1000.00..9263.08 rows=3904 width=13) (actual time=0.316..12.178 rows=3899 loops=1)
+        Workers Planned: 2
+        Workers Launched: 2
+        ->  Parallel Seq Scan on checks  (cost=0.00..7872.68 rows=1627 width=13) (actual time=0.015..8.429 rows=1300 loops=3)
+              Filter: ((monitor_id = 4) AND (checked_at > (now() - '7 days'::interval)))
+              Rows Removed by Filter: 165367
+Planning Time: 0.219 ms
+Execution Time: 12.712 ms
+```
+
+**After** (index on `(monitor_id, checked_at)`, migration `0002`):
+
+```
+Aggregate  (cost=4087.75..4087.76 rows=1 width=48) (actual time=4.413..4.414 rows=1 loops=1)
+  ->  Bitmap Heap Scan on checks  (cost=104.44..4038.95 rows=3904 width=13) (actual time=0.481..3.910 rows=3899 loops=1)
+        Recheck Cond: ((monitor_id = 4) AND (checked_at > (now() - '7 days'::interval)))
+        Heap Blocks: exact=2447
+        ->  Bitmap Index Scan on checks_monitor_checked_idx  (cost=0.00..103.47 rows=3904 width=0) (actual time=0.321..0.321 rows=3899 loops=1)
+              Index Cond: ((monitor_id = 4) AND (checked_at > (now() - '7 days'::interval)))
+Planning Time: 0.262 ms
+Execution Time: 4.482 ms
+```
+
+Without the index, Postgres reads all 500,000 rows and throws away 496,000 of them;
+with it, Postgres jumps straight to the 3,899 rows for that monitor and time range,
+so the query went from 12.7 ms to 4.5 ms.
+
+Why this index: `monitor_id` comes first because the query filters it by equality,
+then `checked_at` because it's a range. Because it starts with `monitor_id`, it also
+covers lookups by monitor alone, so `checks.monitor` has no separate foreign-key
+index (`db_index=False`). Most of the remaining time is fetching the matching rows
+(`Heap Blocks: 2447`), because seeded rows are scattered randomly across the table.
+
+### Rules the database enforces
+
+| Rule | Constraint | Violation → API |
+| ---- | ---------- | --------------- |
+| Monitor names are unique | `uq_monitor_name` (unique) | 409 |
+| One open incident per monitor | `uq_one_open_incident`: partial unique index on `monitor_id` `WHERE resolved_at IS NULL` | 409 |
+
+The code never asks "is the name free?" or "is an incident already open?" before
+inserting. Two requests at the same moment could both get "yes" and both insert.
+It inserts and lets Postgres decide. The `IntegrityError` is mapped to a 409 by
+the constraint's name, inside `transaction.atomic()` (a savepoint) so the failure
+doesn't break a surrounding transaction.
+
+Two `psql` sessions, B starting while A's transaction is still open:
+
+```
+--- session A
+BEGIN
+INSERT INTO incidents (monitor_id, opened_at, cause) VALUES (8, now(), 'session A')
+INSERT 0 1
+SELECT pg_sleep(4)
+COMMIT
+A finished at 22:06:11
+--- session B
+B starts at 22:06:08 (A is still inside its transaction)
+BEGIN
+INSERT INTO incidents (monitor_id, opened_at, cause) VALUES (8, now(), 'session B')
+ERROR:  duplicate key value violates unique constraint "uq_one_open_incident"
+DETAIL:  Key (monitor_id)=(8) already exists.
+COMMIT
+ROLLBACK
+B finished at 22:06:11
+```
+
+(Output from `psql -e`, trimmed: each command's echo is shown once, and the error
+is moved to where it happened; psql prints errors on a separate stream. Postgres
+answers B's `COMMIT` with `ROLLBACK`, because the transaction had already failed.)
+
+B's insert waits until A commits, then fails. Through the API, 20 concurrent
+`POST /monitors/5/incidents/` requests returned one 201 and nineteen 409s, and no 500s.
 
 ## Networking
 
