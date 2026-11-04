@@ -1,7 +1,7 @@
-from django.http import JsonResponse
-from django.views.decorators.http import require_GET
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
 
 
-@require_GET
+@api_view(["GET"])
 def health(request):
-    return JsonResponse({"status": "ok"})
+    return Response({"status": "ok"})
