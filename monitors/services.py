@@ -5,44 +5,102 @@ Convention: get_monitor() turns an id into a monitor (or raises MonitorNotFound)
 every other function takes the monitor itself.
 """
 
-from . import store
+from datetime import timedelta
+
+from django.db import IntegrityError, transaction
+from django.db.models import Avg, Count, FloatField, IntegerField, QuerySet
+from django.db.models.functions import Cast
+from django.utils import timezone
+
+from core.db import PercentileCont, violated_constraint
+
 from .checks import run_check
-from .errors import MonitorNameTaken, MonitorNotFound
+from .errors import IncidentAlreadyOpen, MonitorNameTaken, MonitorNotFound
+from .models import Check, Incident, Monitor
 
 
-def list_monitors() -> list[dict]:
-    return list(store.MONITORS.values())
+def list_monitors() -> QuerySet[Monitor]:
+    # Lazy: the paginator adds COUNT(*) and LIMIT/OFFSET before anything runs.
+    return Monitor.objects.order_by("id")
 
 
-def get_monitor(pk: int) -> dict:
+def get_monitor(pk: int) -> Monitor:
     try:
-        return store.MONITORS[pk]
-    except KeyError:
+        return Monitor.objects.get(pk=pk)
+    except Monitor.DoesNotExist:
         raise MonitorNotFound(pk) from None
 
 
-def create_monitor(data: dict) -> dict:
-    _ensure_name_free(data["name"])
-    monitor = {"id": store.next_id(), **data}
-    store.MONITORS[monitor["id"]] = monitor
+def create_monitor(data: dict) -> Monitor:
+    monitor = Monitor(**data)
+    _save(monitor)
     return monitor
 
 
-def update_monitor(monitor: dict, changes: dict) -> dict:
-    if "name" in changes:
-        _ensure_name_free(changes["name"], exclude_id=monitor["id"])
-    monitor.update(changes)
+def update_monitor(monitor: Monitor, changes: dict) -> Monitor:
+    for field, value in changes.items():
+        setattr(monitor, field, value)
+    _save(monitor, update_fields=list(changes))
     return monitor
 
 
-def delete_monitor(monitor: dict) -> None:
-    del store.MONITORS[monitor["id"]]
+def delete_monitor(monitor: Monitor) -> None:
+    monitor.delete()  # its checks and incidents go too (on_delete=CASCADE)
 
 
-def check_monitor(monitor: dict) -> dict:
-    return run_check(monitor)
+def check_monitor(monitor: Monitor) -> dict:
+    result = run_check(monitor)
+    Check.objects.create(monitor=monitor, **result)
+    return result
 
 
-def _ensure_name_free(name: str, exclude_id: int | None = None) -> None:
-    if store.name_taken(name, exclude_id):
-        raise MonitorNameTaken(name)
+def get_uptime(monitor: Monitor, days: int) -> dict:
+    """Uptime and p95 latency over the last `days` days, computed by Postgres.
+
+    One aggregate query: no check rows are loaded into Python.
+    """
+    since = timezone.now() - timedelta(days=days)
+    stats = Check.objects.filter(monitor=monitor, checked_at__gt=since).aggregate(
+        # avg(ok::int): true counts as 1, false as 0, so the average is the up ratio.
+        up_ratio=Avg(Cast("ok", IntegerField()), output_field=FloatField()),
+        p95_latency_ms=PercentileCont("latency_ms", 0.95),
+        checks=Count("id"),
+    )
+    no_checks = stats["checks"] == 0
+    return {
+        "days": days,
+        "uptime_percent": None if no_checks else round(stats["up_ratio"] * 100, 2),
+        "p95_latency_ms": None if no_checks else round(stats["p95_latency_ms"]),
+        "checks": stats["checks"],
+    }
+
+
+def open_incident(monitor: Monitor, cause: str = "") -> Incident:
+    """Open an incident, unless one is already open for this monitor.
+
+    Like the name check, there is no "is one open?" query first: the partial unique
+    index uq_one_open_incident decides, so two concurrent calls can't both succeed.
+    """
+    try:
+        with transaction.atomic():
+            return Incident.objects.create(monitor=monitor, cause=cause)
+    except IntegrityError as exc:
+        if violated_constraint(exc) == "uq_one_open_incident":
+            raise IncidentAlreadyOpen(monitor.pk) from exc
+        raise
+
+
+def _save(monitor: Monitor, **save_kwargs) -> None:
+    """Save, turning a duplicate name into MonitorNameTaken.
+
+    There is no "is the name free?" query first: two requests could both see "free".
+    The unique constraint decides. atomic() wraps the INSERT/UPDATE in a savepoint,
+    so a failure doesn't break a surrounding transaction (e.g. in tests).
+    """
+    try:
+        with transaction.atomic():
+            monitor.save(**save_kwargs)
+    except IntegrityError as exc:
+        if violated_constraint(exc) == "uq_monitor_name":
+            raise MonitorNameTaken(monitor.name) from exc
+        raise
