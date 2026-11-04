@@ -137,3 +137,11 @@ MAILERS = {
         "BACKEND": "django.core.mail.backends.console.EmailBackend",
     },
 }
+
+
+# Django REST framework
+# https://www.django-rest-framework.org/api-guide/settings/
+
+REST_FRAMEWORK = {
+    "EXCEPTION_HANDLER": "core.exception_handler.exception_handler",
+}
