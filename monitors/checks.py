@@ -3,8 +3,10 @@ import time
 
 import httpx
 
+from .models import Monitor
 
-def run_check(monitor: dict) -> dict:
+
+def run_check(monitor: Monitor) -> dict:
     """Call the monitor's URL once.
 
     A failing target is a normal result for a monitor, so this never raises:
@@ -12,9 +14,7 @@ def run_check(monitor: dict) -> dict:
     """
     started = time.perf_counter()
     try:
-        response = httpx.request(
-            monitor["method"], monitor["url"], timeout=monitor["timeout_s"]
-        )
+        response = httpx.request(monitor.method, monitor.url, timeout=monitor.timeout_s)
     except httpx.HTTPError as exc:
         return {
             "ok": False,
@@ -23,7 +23,7 @@ def run_check(monitor: dict) -> dict:
             "error_type": _classify(exc),
         }
 
-    ok = response.status_code == monitor["expected_status"]
+    ok = response.status_code == monitor.expected_status
     return {
         "ok": ok,
         "status_code": response.status_code,
