@@ -59,7 +59,7 @@ Built with Django, PostgreSQL and Docker Compose.
 
 | Service    | Description           | URL / port on your machine                 |
 | ---------- | --------------------- | ------------------------------------------ |
-| `api`      | Django app (gunicorn) | http://localhost:8100                      |
+| `api`      | Django app            | http://localhost:8100                      |
 | `postgres` | PostgreSQL 16         | `localhost:5433` (bound to 127.0.0.1 only) |
 
 Host ports 8100 and 5433 are used instead of 8000 and 5432 so Pulse can run
@@ -75,6 +75,78 @@ alongside the EasyeSuite stack.
 | `docker compose exec api python manage.py <command>` | Run a Django management command                  |
 | `docker compose down`                                | Stop everything (database data is kept)          |
 | `docker compose down -v`                             | Stop everything **and delete the database data** |
+
+## API
+
+Built with Django REST framework. Open any endpoint in a browser for DRF's
+browsable API.
+
+| Method + URL                   | Does                         | Success | Errors   |
+| ------------------------------ | ---------------------------- | ------- | -------- |
+| `GET /health`                  | liveness check               | 200     |          |
+| `POST /monitors/`              | create a monitor             | 201     | 400, 409 |
+| `GET /monitors/?limit&offset`  | list monitors (paginated)    | 200     |          |
+| `GET /monitors/<id>/`          | get one monitor              | 200     | 404      |
+| `PATCH /monitors/<id>/`        | change some fields           | 200     | 400, 404, 409 |
+| `DELETE /monitors/<id>/`       | delete a monitor             | 204     | 404      |
+| `POST /monitors/<id>/check/`   | call the monitor's URL once  | 200     | 404      |
+
+Example:
+
+```bash
+curl -X POST http://localhost:8100/monitors/ -H 'Content-Type: application/json' \
+  -d '{"name": "httpbin", "url": "https://httpbin.org/get", "timeout_s": 5, "interval_s": 30}'
+```
+
+Conventions:
+
+- **Invalid input returns 400** with one message per field. That is DRF's
+  convention (FastAPI uses 422).
+- **URLs end with a slash** (`/monitors/`), the Django convention. A `POST` without
+  the slash fails, because Django can't redirect a `POST` and keep its body.
+- **Pagination** uses `?limit=` (default 20, max 100) and `?offset=`. The response is
+  `{"count": <total>, "next": <url>, "previous": <url>, "results": [...]}`.
+- **"Check now" always returns 200.** A target that is down is a result, not an
+  error in Pulse. `error_type` is one of `timeout`, `connection_refused`, `dns`,
+  `wrong_status`, or `error` (anything else, e.g. a TLS failure).
+
+### Which endpoints are idempotent
+
+Idempotent means calling it twice leaves the system in the same state as calling it once.
+
+| Endpoint             | Idempotent? | Why |
+| -------------------- | ----------- | --- |
+| `GET` (all)          | yes         | reads only, changes nothing |
+| `PATCH /monitors/<id>/` | yes      | it sets fields to values; setting `timeout_s` to 10 twice still leaves 10 |
+| `DELETE /monitors/<id>/` | yes     | after the first call the monitor is gone, and a second call changes nothing. The *response* differs (204, then 404), but idempotency is about the effect, not the response |
+| `POST /monitors/`    | no          | each call tries to create a new monitor (the second one gets 409 only because names are unique) |
+| `POST /monitors/<id>/check/` | no  | each call makes a new request to the target and records a new result |
+
+## Networking
+
+Inside a container, `localhost` means **that container**, not your laptop. So from
+inside Pulse, `http://localhost:8000` is Pulse itself, not the EasyeSuite backend
+that your laptop reaches at `localhost:8000`.
+
+Docker Compose gives each project its own network, and containers on the same
+network reach each other by **service name** through Docker's built-in DNS. That is
+why the `api` container reaches its database at `postgres:5432`. To monitor
+EasyeSuite, the `api` service joins EasyeSuite's network as an external network.
+Then `http://django:8000/ht/` and `http://frontend:3000/` resolve to those
+containers:
+
+```yaml
+services:
+  api:
+    networks: [default, easyesuite]
+networks:
+  easyesuite:
+    external: true
+    name: <name from `docker network ls`>
+```
+
+Monitor URLs are validated with a custom validator because Django's `URLValidator`
+rejects hostnames without a dot (such as `django` or `frontend`).
 
 ## Configuration
 
@@ -98,6 +170,10 @@ All settings come from environment variables in `.env` (never committed).
   8100 or 5433. Stop it, or change the host port in `compose.yaml`.
 - **The app container keeps restarting or exits**: check `docker compose logs api`.
   A `KeyError` means a variable is missing from `.env`.
+- **`password authentication failed for user`**: Postgres only applies `POSTGRES_PASSWORD`
+  when its data volume is first created. If you changed the password in `.env` later,
+  reset the database with `docker compose down -v` (deletes all data), then
+  `docker compose up -d --wait` and run `migrate` again.
 
 ## Development
 
