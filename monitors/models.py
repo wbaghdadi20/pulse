@@ -42,8 +42,8 @@ class Check(models.Model):
         WRONG_STATUS = "wrong_status"
         ERROR = "error"
 
-    # No single-column index: the uptime query needs (monitor_id, checked_at), and
-    # that index is added in a later migration so the speed-up can be measured.
+    # No single-column index: the (monitor, checked_at) index below starts with
+    # monitor_id, so it already covers lookups by monitor alone.
     monitor = models.ForeignKey(
         Monitor, on_delete=models.CASCADE, related_name="checks", db_index=False
     )
@@ -58,6 +58,13 @@ class Check(models.Model):
 
     class Meta:
         db_table = "checks"
+        indexes = [
+            # Matches the uptime query: WHERE monitor_id = ? AND checked_at > ?
+            # monitor_id first (equality), checked_at second (range).
+            models.Index(
+                fields=["monitor", "checked_at"], name="checks_monitor_checked_idx"
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.monitor_id} @ {self.checked_at:%Y-%m-%d %H:%M:%S} ok={self.ok}"
