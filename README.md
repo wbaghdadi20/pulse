@@ -98,3 +98,11 @@ All settings come from environment variables in `.env` (never committed).
   8100 or 5433. Stop it, or change the host port in `compose.yaml`.
 - **The app container keeps restarting or exits**: check `docker compose logs api`.
   A `KeyError` means a variable is missing from `.env`.
+
+## Development
+
+Install the git hooks once after cloning (requires [pre-commit](https://pre-commit.com/)):
+
+    pre-commit install
+
+Run all checks manually with `pre-commit run --all-files`.
