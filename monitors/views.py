@@ -12,7 +12,7 @@ from rest_framework.views import APIView
 from core.pagination import DefaultPagination
 
 from . import services
-from .serializers import MonitorSerializer, UptimeQuerySerializer
+from .serializers import IncidentSerializer, MonitorSerializer, UptimeQuerySerializer
 
 
 class MonitorListView(APIView):
@@ -64,3 +64,18 @@ class MonitorUptimeView(APIView):
         query = UptimeQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         return Response(services.get_uptime(monitor, query.validated_data["days"]))
+
+
+class MonitorIncidentListView(APIView):
+    """/monitors/<pk>/incidents/ : open an incident by hand (e.g. planned outage)."""
+
+    def post(self, request: Request, pk: int) -> Response:
+        monitor = services.get_monitor(pk)
+        serializer = IncidentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        incident = services.open_incident(
+            monitor, serializer.validated_data.get("cause", "")
+        )
+        return Response(
+            IncidentSerializer(incident).data, status=status.HTTP_201_CREATED
+        )

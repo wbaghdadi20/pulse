@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Monitor
+from .models import Incident, Monitor
 
 
 class MonitorSerializer(serializers.ModelSerializer):
@@ -24,6 +24,15 @@ class MonitorSerializer(serializers.ModelSerializer):
         # races. Uniqueness is left to the database instead; the service turns a
         # violation into 409. max_length is kept: DRF adds it separately.
         extra_kwargs = {"name": {"validators": []}}
+
+
+class IncidentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Incident
+        fields = ["id", "monitor", "opened_at", "resolved_at", "cause"]
+        read_only_fields = ["id", "monitor", "opened_at", "resolved_at"]
+        # The "one open incident" rule is enforced by the database, not by DRF.
+        validators = []
 
 
 class UptimeQuerySerializer(serializers.Serializer):

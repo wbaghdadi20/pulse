@@ -3,6 +3,7 @@ from django.urls import path
 from .views import (
     MonitorCheckView,
     MonitorDetailView,
+    MonitorIncidentListView,
     MonitorListView,
     MonitorUptimeView,
 )
@@ -13,5 +14,10 @@ urlpatterns = [
     path("monitors/<int:pk>/check/", MonitorCheckView.as_view(), name="monitor-check"),
     path(
         "monitors/<int:pk>/uptime/", MonitorUptimeView.as_view(), name="monitor-uptime"
+    ),
+    path(
+        "monitors/<int:pk>/incidents/",
+        MonitorIncidentListView.as_view(),
+        name="monitor-incidents",
     ),
 ]

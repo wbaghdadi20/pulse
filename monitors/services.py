@@ -15,8 +15,8 @@ from django.utils import timezone
 from core.db import PercentileCont, violated_constraint
 
 from .checks import run_check
-from .errors import MonitorNameTaken, MonitorNotFound
-from .models import Check, Monitor
+from .errors import IncidentAlreadyOpen, MonitorNameTaken, MonitorNotFound
+from .models import Check, Incident, Monitor
 
 
 def list_monitors() -> QuerySet[Monitor]:
@@ -73,6 +73,21 @@ def get_uptime(monitor: Monitor, days: int) -> dict:
         "p95_latency_ms": None if no_checks else round(stats["p95_latency_ms"]),
         "checks": stats["checks"],
     }
+
+
+def open_incident(monitor: Monitor, cause: str = "") -> Incident:
+    """Open an incident, unless one is already open for this monitor.
+
+    Like the name check, there is no "is one open?" query first: the partial unique
+    index uq_one_open_incident decides, so two concurrent calls can't both succeed.
+    """
+    try:
+        with transaction.atomic():
+            return Incident.objects.create(monitor=monitor, cause=cause)
+    except IntegrityError as exc:
+        if violated_constraint(exc) == "uq_one_open_incident":
+            raise IncidentAlreadyOpen(monitor.pk) from exc
+        raise
 
 
 def _save(monitor: Monitor, **save_kwargs) -> None:
