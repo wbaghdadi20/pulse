@@ -5,10 +5,14 @@ Convention: get_monitor() turns an id into a monitor (or raises MonitorNotFound)
 every other function takes the monitor itself.
 """
 
-from django.db import IntegrityError, transaction
-from django.db.models import QuerySet
+from datetime import timedelta
 
-from core.db import violated_constraint
+from django.db import IntegrityError, transaction
+from django.db.models import Avg, Count, FloatField, IntegerField, QuerySet
+from django.db.models.functions import Cast
+from django.utils import timezone
+
+from core.db import PercentileCont, violated_constraint
 
 from .checks import run_check
 from .errors import MonitorNameTaken, MonitorNotFound
@@ -48,6 +52,27 @@ def check_monitor(monitor: Monitor) -> dict:
     result = run_check(monitor)
     Check.objects.create(monitor=monitor, **result)
     return result
+
+
+def get_uptime(monitor: Monitor, days: int) -> dict:
+    """Uptime and p95 latency over the last `days` days, computed by Postgres.
+
+    One aggregate query: no check rows are loaded into Python.
+    """
+    since = timezone.now() - timedelta(days=days)
+    stats = Check.objects.filter(monitor=monitor, checked_at__gt=since).aggregate(
+        # avg(ok::int): true counts as 1, false as 0, so the average is the up ratio.
+        up_ratio=Avg(Cast("ok", IntegerField()), output_field=FloatField()),
+        p95_latency_ms=PercentileCont("latency_ms", 0.95),
+        checks=Count("id"),
+    )
+    no_checks = stats["checks"] == 0
+    return {
+        "days": days,
+        "uptime_percent": None if no_checks else round(stats["up_ratio"] * 100, 2),
+        "p95_latency_ms": None if no_checks else round(stats["p95_latency_ms"]),
+        "checks": stats["checks"],
+    }
 
 
 def _save(monitor: Monitor, **save_kwargs) -> None:

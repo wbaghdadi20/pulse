@@ -12,7 +12,7 @@ from rest_framework.views import APIView
 from core.pagination import DefaultPagination
 
 from . import services
-from .serializers import MonitorSerializer
+from .serializers import MonitorSerializer, UptimeQuerySerializer
 
 
 class MonitorListView(APIView):
@@ -54,3 +54,13 @@ class MonitorCheckView(APIView):
     def post(self, request: Request, pk: int) -> Response:
         # Always 200: a down target is a result, not an error in Pulse.
         return Response(services.check_monitor(services.get_monitor(pk)))
+
+
+class MonitorUptimeView(APIView):
+    """/monitors/<pk>/uptime/?days=7|30|90"""
+
+    def get(self, request: Request, pk: int) -> Response:
+        monitor = services.get_monitor(pk)
+        query = UptimeQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        return Response(services.get_uptime(monitor, query.validated_data["days"]))

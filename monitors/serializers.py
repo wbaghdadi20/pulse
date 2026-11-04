@@ -24,3 +24,9 @@ class MonitorSerializer(serializers.ModelSerializer):
         # races. Uniqueness is left to the database instead; the service turns a
         # violation into 409. max_length is kept: DRF adds it separately.
         extra_kwargs = {"name": {"validators": []}}
+
+
+class UptimeQuerySerializer(serializers.Serializer):
+    """Validates the query string of GET /monitors/<id>/uptime/."""
+
+    days = serializers.ChoiceField(choices=[7, 30, 90], default=7)
