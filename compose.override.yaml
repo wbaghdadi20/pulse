@@ -1,0 +1,6 @@
+# Local development only: mounts the code and auto-reloads on save.
+services:
+  api:
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - .:/app

@@ -106,3 +106,11 @@ Install the git hooks once after cloning (requires [pre-commit](https://pre-comm
     pre-commit install
 
 Run all checks manually with `pre-commit run --all-files`.
+
+`compose.override.yaml` is merged automatically by Docker Compose. It mounts the
+code into the `api` container and runs Django's `runserver`, which reloads on save.
+To run the production-style gunicorn setup instead:
+
+    docker compose -f compose.yaml up --build -d --wait
+
+Passing -f compose.yaml tells Compose to use only that file, so the override isn't merged in.
