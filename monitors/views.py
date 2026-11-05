@@ -73,7 +73,7 @@ class MonitorIncidentListView(APIView):
         monitor = services.get_monitor(pk)
         serializer = IncidentSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        incident = services.open_incident(
+        incident = services.open_incident_for(
             monitor, serializer.validated_data.get("cause", "")
         )
         return Response(

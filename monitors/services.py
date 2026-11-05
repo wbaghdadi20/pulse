@@ -5,8 +5,9 @@ Convention: get_monitor() turns an id into a monitor (or raises MonitorNotFound)
 every other function takes the monitor itself.
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import Avg, Count, FloatField, IntegerField, QuerySet
 from django.db.models.functions import Cast
@@ -14,6 +15,7 @@ from django.utils import timezone
 
 from core.db import PercentileCont, violated_constraint
 
+from . import incidents
 from .checks import run_check
 from .errors import IncidentAlreadyOpen, MonitorNameTaken, MonitorNotFound
 from .models import Check, Incident, Monitor
@@ -49,17 +51,52 @@ def delete_monitor(monitor: Monitor) -> None:
 
 
 def check_monitor(monitor: Monitor) -> dict:
+    """Check once, record the result, then let the state machine react to it."""
     result = run_check(monitor)
     Check.objects.create(monitor=monitor, **result)
+    evaluate_incidents(monitor)
     return result
 
 
-def get_uptime(monitor: Monitor, days: int) -> dict:
+def evaluate_incidents(monitor: Monitor) -> incidents.Action:
+    """Apply the state machine to the monitor's latest checks and act on the answer.
+
+    This is the I/O half: load the recent results and the current state, ask
+    incidents.decide() (pure), then open or resolve in the database.
+    """
+    fail_threshold = settings.PULSE_FAIL_THRESHOLD
+    ok_threshold = settings.PULSE_OK_THRESHOLD
+
+    # Only the last max(N, M) checks can matter; fetch exactly those (LIMIT).
+    window = max(fail_threshold, ok_threshold)
+    latest = Check.objects.filter(monitor=monitor).order_by("-checked_at", "-id")[
+        :window
+    ]
+    results = [check.ok for check in reversed(latest)]  # oldest first
+
+    # At most one exists: enforced by the partial unique index uq_one_open_incident.
+    current = Incident.objects.filter(monitor=monitor, resolved_at__isnull=True).first()
+
+    action = incidents.decide(
+        results,
+        incident_open=current is not None,
+        fail_threshold=fail_threshold,
+        ok_threshold=ok_threshold,
+    )
+    if action is incidents.Action.OPEN:
+        open_incident_for(monitor, cause=f"{fail_threshold} failed checks in a row")
+    elif action is incidents.Action.RESOLVE:
+        resolve_incident(current)
+    return action
+
+
+def get_uptime(monitor: Monitor, days: int, now: datetime | None = None) -> dict:
     """Uptime and p95 latency over the last `days` days, computed by Postgres.
 
     One aggregate query: no check rows are loaded into Python.
+    `now` is injectable so tests can pin the clock; production leaves it None.
     """
-    since = timezone.now() - timedelta(days=days)
+    since = (now or timezone.now()) - timedelta(days=days)
     stats = Check.objects.filter(monitor=monitor, checked_at__gt=since).aggregate(
         # avg(ok::int): true counts as 1, false as 0, so the average is the up ratio.
         up_ratio=Avg(Cast("ok", IntegerField()), output_field=FloatField()),
@@ -75,7 +112,7 @@ def get_uptime(monitor: Monitor, days: int) -> dict:
     }
 
 
-def open_incident(monitor: Monitor, cause: str = "") -> Incident:
+def open_incident_for(monitor: Monitor, cause: str = "") -> Incident:
     """Open an incident, unless one is already open for this monitor.
 
     Like the name check, there is no "is one open?" query first: the partial unique
@@ -88,6 +125,12 @@ def open_incident(monitor: Monitor, cause: str = "") -> Incident:
         if violated_constraint(exc) == "uq_one_open_incident":
             raise IncidentAlreadyOpen(monitor.pk) from exc
         raise
+
+
+def resolve_incident(incident: Incident, now: datetime | None = None) -> Incident:
+    incident.resolved_at = now or timezone.now()
+    incident.save(update_fields=["resolved_at"])
+    return incident
 
 
 def _save(monitor: Monitor, **save_kwargs) -> None:
