@@ -10,6 +10,12 @@ services:
       postgres:
         condition: service_healthy
 
+  flaky:
+    # A tiny target Pulse can monitor; switch it with POST /mode (see flaky/main.py).
+    build: ./flaky
+    ports:
+      - "8200:8000"
+
   postgres:
     image: postgres:16
     environment:
