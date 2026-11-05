@@ -1,0 +1,59 @@
+"""Shared fixtures for the monitors app.
+
+pytest-django does the heavy lifting: it creates a separate `test_<db>` database
+once per run, and wraps every test marked `django_db` in a transaction that is
+rolled back afterwards, so each test starts from empty tables.
+"""
+
+import pytest
+from rest_framework.test import APIClient
+
+from monitors.models import Monitor
+
+MONITOR_PAYLOAD = {
+    "name": "backend",
+    "url": "http://target:8000/health",
+    "timeout_s": 5,
+    "interval_s": 30,
+}
+
+
+@pytest.fixture
+def api() -> APIClient:
+    """DRF's test client: like FastAPI's TestClient, but talks to the Django app in-process."""
+    return APIClient()
+
+
+@pytest.fixture
+def monitor(db) -> Monitor:
+    """One saved monitor. Depending on `db` opts this fixture into the database."""
+    return Monitor.objects.create(**MONITOR_PAYLOAD)
+
+
+@pytest.fixture
+def fake_check(monkeypatch):
+    """Replace the real HTTP call with a canned result.
+
+    Returns a function to set what the next checks report, e.g. fake_check(ok=False).
+    """
+    state = {"result": _result(ok=True)}
+
+    def set_result(**kwargs):
+        state["result"] = _result(**kwargs)
+
+    # services.py imported run_check by name, so patch it where it's looked up.
+    monkeypatch.setattr(
+        "monitors.services.run_check",
+        lambda monitor, client=None: dict(state["result"]),
+    )
+    return set_result
+
+
+def _result(ok: bool = True, **overrides) -> dict:
+    base = {
+        "ok": ok,
+        "status_code": 200 if ok else None,
+        "latency_ms": 12,
+        "error_type": None if ok else "timeout",
+    }
+    return {**base, **overrides}
