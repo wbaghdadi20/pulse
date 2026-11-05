@@ -8,3 +8,7 @@ __pycache__/
 
 # Django local DB
 db.sqlite3
+
+# Test artefacts
+.coverage
+.pytest_cache/

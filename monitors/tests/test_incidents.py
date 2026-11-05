@@ -4,6 +4,8 @@ Results are oldest first, most recent last. N = failures in a row to open,
 M = successes in a row to resolve.
 """
 
+import pytest
+
 from monitors.incidents import Action, decide
 
 OK, FAIL = True, False
@@ -55,3 +57,8 @@ def test_only_the_most_recent_results_count():
 def test_no_results_does_nothing():
     assert decide_([]) == Action.NOTHING
     assert decide_([], incident_open=True) == Action.NOTHING
+
+
+def test_thresholds_below_one_are_rejected():
+    with pytest.raises(ValueError):
+        decide([FAIL], False, fail_threshold=0, ok_threshold=2)
