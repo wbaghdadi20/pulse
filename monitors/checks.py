@@ -6,15 +6,22 @@ import httpx
 from .models import Monitor
 
 
-def run_check(monitor: Monitor) -> dict:
+def run_check(monitor: Monitor, client: httpx.Client | None = None) -> dict:
     """Call the monitor's URL once.
 
     A failing target is a normal result for a monitor, so this never raises:
     every outcome comes back as a dict.
+
+    `client` is injectable so tests can plug in httpx.MockTransport instead of
+    the network. Production passes nothing and gets a real client.
     """
     started = time.perf_counter()
     try:
-        response = httpx.request(monitor.method, monitor.url, timeout=monitor.timeout_s)
+        if client is None:
+            with httpx.Client() as client:
+                response = _send(client, monitor)
+        else:
+            response = _send(client, monitor)
     except httpx.HTTPError as exc:
         return {
             "ok": False,
@@ -32,6 +39,10 @@ def run_check(monitor: Monitor) -> dict:
     }
 
 
+def _send(client: httpx.Client, monitor: Monitor) -> httpx.Response:
+    return client.request(monitor.method, monitor.url, timeout=monitor.timeout_s)
+
+
 def _elapsed_ms(started: float) -> int:
     return round((time.perf_counter() - started) * 1000)
 
@@ -40,7 +51,7 @@ def _classify(exc: httpx.HTTPError) -> str:
     if isinstance(exc, httpx.TimeoutException):
         return "timeout"
     # httpx wraps the real OS error; walk the chain to find what actually failed.
-    cause = exc
+    cause: BaseException | None = exc
     while cause is not None:
         if isinstance(cause, socket.gaierror):
             return "dns"
