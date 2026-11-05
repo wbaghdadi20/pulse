@@ -10,3 +10,11 @@ ignore = ["E501"]
 DJANGO_SETTINGS_MODULE = "config.settings"
 python_files = ["test_*.py"]
 addopts = "--reuse-db"
+
+[tool.coverage.run]
+source = ["core", "monitors"]
+omit = ["*/migrations/*", "*/tests/*", "*/management/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
