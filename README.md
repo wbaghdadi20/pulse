@@ -61,9 +61,10 @@ Built with Django, PostgreSQL and Docker Compose.
 | ---------- | --------------------- | ------------------------------------------ |
 | `api`      | Django app            | http://localhost:8100                      |
 | `postgres` | PostgreSQL 16         | `localhost:5433` (bound to 127.0.0.1 only) |
+| `flaky`    | test target (FastAPI) | http://localhost:8200                      |
 
-Host ports 8100 and 5433 are used instead of 8000 and 5432 so Pulse can run
-alongside the EasyeSuite stack.
+Host ports 8100 / 8200 / 5433 are used instead of 8000 / 5432 so Pulse can run
+alongside other local stacks.
 
 ## Everyday commands
 
@@ -111,6 +112,22 @@ Conventions:
 - **"Check now" always returns 200.** A target that is down is a result, not an
   error in Pulse. `error_type` is one of `timeout`, `connection_refused`, `dns`,
   `wrong_status`, or `error` (anything else, e.g. a TLS failure).
+
+### Incidents and flap protection
+
+Every check result feeds a small state machine (`monitors/incidents.py`):
+
+- No open incident and the last **N** checks all failed → open an incident.
+- Open incident and the last **M** checks all passed → resolve it.
+- Anything else (a single failed check between successes, not enough checks yet)
+  → nothing. Networks blip; alerting on every blip trains people to ignore alerts.
+- A monitor never has two open incidents: the state machine won't ask for one, and
+  the database forbids it anyway (see *Rules the database enforces*).
+
+N and M are settings: `PULSE_FAIL_THRESHOLD` (default 3) and `PULSE_OK_THRESHOLD`
+(default 2). The decision function is pure (no Django, no database) and takes the
+recent results plus the current state; `services.evaluate_incidents()` loads those
+from Postgres, calls it, and applies the answer.
 
 ### Which endpoints are idempotent
 
@@ -234,6 +251,26 @@ answers B's `COMMIT` with `ROLLBACK`, because the transaction had already failed
 B's insert waits until A commits, then fails. Through the API, 20 concurrent
 `POST /monitors/5/incidents/` requests returned one 201 and nineteen 409s, and no 500s.
 
+## flaky: a target you control
+
+`flaky` is a tiny FastAPI app in `flaky/` that Pulse can monitor at
+`http://flaky:8000/` (from inside Docker) or `http://localhost:8200/` (from your
+laptop). Switch how it answers:
+
+```bash
+curl -X POST localhost:8200/mode -H 'Content-Type: application/json' -d '{"mode": "500"}'
+```
+
+| Mode   | `GET /` does                | Pulse reports        |
+| ------ | --------------------------- | -------------------- |
+| `ok`   | 200                         | `ok: true`           |
+| `500`  | 500                         | `wrong_status`       |
+| `slow` | waits 10 s, then 200        | `timeout` (with `timeout_s` < 10) |
+| down   | `docker compose stop flaky` | `dns`: a stopped container disappears from Docker's DNS, so the name no longer resolves |
+
+`down` is deliberately not a mode: a crashed service doesn't answer politely, so
+stopping the container is the realistic test. `docker compose start flaky` brings it back.
+
 ## Networking
 
 Inside a container, `localhost` means **that container**, not your laptop. So from
@@ -275,6 +312,8 @@ All settings come from environment variables in `.env` (never committed).
 | `POSTGRES_PASSWORD`    | Database password.                                                    |
 | `POSTGRES_HOST`        | Database host. `postgres` (the compose service name) inside Docker.   |
 | `POSTGRES_PORT`        | Database port inside the Docker network. Defaults to `5432`.          |
+| `PULSE_FAIL_THRESHOLD` | Failed checks in a row before an incident opens. Defaults to `3`.     |
+| `PULSE_OK_THRESHOLD`   | Successful checks in a row before it resolves. Defaults to `2`.       |
 
 ## Troubleshooting
 
@@ -302,3 +341,30 @@ To run the production-style gunicorn setup instead:
     docker compose -f compose.yaml up --build -d --wait
 
 Passing -f compose.yaml tells Compose to use only that file, so the override isn't merged in.
+
+### Tests
+
+```bash
+docker compose exec api pytest            # run everything (~1 s)
+docker compose exec api pytest --cov      # with a coverage report
+docker compose exec api pytest --create-db  # after a new migration (tests reuse the DB otherwise)
+docker compose exec api pytest monitors/tests/test_incidents.py -v   # one file
+```
+
+Tests run inside the `api` container because they need the same environment and
+database host as the app. `pytest-django` creates a separate `test_pulse` database
+and wraps each test in a transaction that is rolled back, so tests never touch
+development data and always start empty.
+
+Three kinds of tests, fastest first:
+
+| Where | What | Needs |
+| ----- | ---- | ----- |
+| `monitors/tests/test_incidents.py`, `test_validators.py` | pure logic | nothing |
+| `monitors/tests/test_checks.py` | `run_check()` against `httpx.MockTransport`: every `error_type`, no network | nothing |
+| `monitors/tests/test_api.py`, `test_incident_flow.py`, `core/tests/` | the full stack through DRF's `APIClient` | the test database |
+
+Two things are injectable so tests can control them: `run_check(monitor, client=...)`
+takes an httpx client (tests pass a fake transport), and `get_uptime(..., now=...)`
+takes the current time. Coverage is configured in `pyproject.toml`; the suite
+sits at ~97%.
