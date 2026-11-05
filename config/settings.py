@@ -145,3 +145,9 @@ MAILERS = {
 REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "core.exception_handler.exception_handler",
 }
+
+
+# Pulse
+# Flap protection: how many checks in a row before an incident opens / resolves.
+PULSE_FAIL_THRESHOLD = int(os.environ.get("PULSE_FAIL_THRESHOLD", "3"))
+PULSE_OK_THRESHOLD = int(os.environ.get("PULSE_OK_THRESHOLD", "2"))
