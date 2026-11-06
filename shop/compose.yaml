@@ -1,0 +1,51 @@
+# shop: a separate Compose project that Pulse monitors.
+#
+# Only shop joins the shared `pulse-net` network (created by Pulse's compose
+# file, so start Pulse first). shop-db and shop-redis stay private to this project:
+# Pulse can only learn about them through shop's deep health check at /ht/.
+name: shop
+
+services:
+  shop:
+    build: .
+    environment:
+      SHOP_DB_HOST: shop-db
+      SHOP_DB_NAME: shop
+      SHOP_DB_USER: shop
+      SHOP_DB_PASSWORD: shop # demo target on a private network, not a real secret
+      SHOP_REDIS_URL: redis://shop-redis:6379/0
+    ports:
+      - "8300:8000"
+    depends_on:
+      shop-db:
+        condition: service_healthy
+      shop-redis:
+        condition: service_started
+    networks:
+      - default
+      - monitoring
+
+  shop-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: shop
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+    volumes:
+      - shop-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d shop"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  shop-redis:
+    image: redis:7-alpine
+
+networks:
+  monitoring:
+    name: pulse-net
+    external: true
+
+volumes:
+  shop-pgdata:

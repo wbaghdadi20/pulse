@@ -40,3 +40,8 @@ do_not_mutate = [
 # mutmut runs the tests from a copy in mutants/ (it copies tests/ and pyproject.toml
 # itself); Django needs the settings there too.
 also_copy = ["config/"]
+
+[tool.ruff.lint.isort]
+# shop/ is a second project in this repo; name its packages so isort groups them
+# as first-party there too (ruff otherwise decides by whether the file exists at the root).
+known-first-party = ["catalog", "config", "core", "monitors", "tests"]

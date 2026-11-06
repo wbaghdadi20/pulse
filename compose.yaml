@@ -9,6 +9,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - default
+      - monitoring
 
   flaky:
     # A tiny target Pulse can monitor; switch it with POST /mode (see flaky/main.py).
@@ -31,6 +34,13 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+# Shared with the separate `shop` project (shop/compose.yaml), so the api container
+# can reach shop by name. Created once by hand: docker network create pulse-net
+networks:
+  monitoring:
+    name: pulse-net
+    external: true
 
 volumes:
   pgdata:
