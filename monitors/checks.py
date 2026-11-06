@@ -30,17 +30,40 @@ def run_check(monitor: Monitor, client: httpx.Client | None = None) -> dict:
             "error_type": _classify(exc),
         }
 
-    ok = response.status_code == monitor.expected_status
+    if monitor.assertions:
+        # Deep health checks answer 500 when any component fails; the status code
+        # would mark the service down for things we don't care about. Judge the
+        # body by the asserted keys only.
+        ok = _assertions_hold(response, monitor.assertions)
+        error_type = None if ok else "assertion_failed"
+    else:
+        ok = response.status_code == monitor.expected_status
+        error_type = None if ok else "wrong_status"
     return {
         "ok": ok,
         "status_code": response.status_code,
         "latency_ms": _elapsed_ms(started),
-        "error_type": None if ok else "wrong_status",
+        "error_type": error_type,
     }
 
 
 def _send(client: httpx.Client, monitor: Monitor) -> httpx.Response:
-    return client.request(monitor.method, monitor.url, timeout=monitor.timeout_s)
+    # django-health-check and friends only return JSON when asked for it.
+    headers = {"Accept": "application/json"} if monitor.assertions else None
+    return client.request(
+        monitor.method, monitor.url, timeout=monitor.timeout_s, headers=headers
+    )
+
+
+def _assertions_hold(response: httpx.Response, assertions: dict) -> bool:
+    """True if the body is a JSON object with every asserted key at its expected value."""
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    if not isinstance(body, dict):
+        return False
+    return all(body.get(key) == expected for key, expected in assertions.items())
 
 
 def _elapsed_ms(started: float) -> int:

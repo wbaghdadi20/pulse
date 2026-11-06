@@ -47,15 +47,18 @@ def fake_check(monkeypatch):
     Returns a function to set what the next checks report, e.g. fake_check(ok=False).
     """
     state = {"result": _result(ok=True)}
+    calls: list = []
 
     def set_result(**kwargs):
         state["result"] = _result(**kwargs)
 
+    def fake_run_check(monitor, client=None):
+        calls.append(monitor)
+        return dict(state["result"])
+
     # services.py imported run_check by name, so patch it where it's looked up.
-    monkeypatch.setattr(
-        "monitors.services.run_check",
-        lambda monitor, client=None: dict(state["result"]),
-    )
+    monkeypatch.setattr("monitors.services.run_check", fake_run_check)
+    set_result.calls = calls  # the monitors run_check was called with, in order
     return set_result
 
 

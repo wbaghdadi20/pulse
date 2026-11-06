@@ -16,6 +16,7 @@ class MonitorSerializer(serializers.ModelSerializer):
             "expected_status",
             "timeout_s",
             "interval_s",
+            "assertions",
             "created_at",
         ]
         read_only_fields = ["id", "created_at"]
@@ -24,6 +25,23 @@ class MonitorSerializer(serializers.ModelSerializer):
         # races. Uniqueness is left to the database instead; the service turns a
         # violation into 409. max_length is kept: DRF adds it separately.
         extra_kwargs = {"name": {"validators": []}}
+
+    def validate_assertions(self, value):
+        """A JSONField accepts any JSON; we want a flat {key: expected string} object."""
+        if value is None:
+            return None
+        if not isinstance(value, dict) or not value:
+            raise serializers.ValidationError(
+                'Must be a non-empty object: {"key": "expected value"}.'
+            )
+        if len(value) > 20:
+            raise serializers.ValidationError("At most 20 keys.")
+        for key, expected in value.items():
+            if not isinstance(expected, str):
+                raise serializers.ValidationError(
+                    f'The expected value for "{key}" must be a string.'
+                )
+        return value
 
 
 class IncidentSerializer(serializers.ModelSerializer):

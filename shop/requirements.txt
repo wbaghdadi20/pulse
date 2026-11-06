@@ -1,0 +1,6 @@
+Django==6.1.2
+django-health-check==4.11.4
+gunicorn==26.2.0
+psycopg==3.3.7
+psycopg-binary==3.3.7
+redis==8.1.0

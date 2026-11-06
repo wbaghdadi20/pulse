@@ -21,6 +21,10 @@ class Monitor(models.Model):
         validators=[MinValueValidator(1), MaxValueValidator(30)]
     )
     interval_s = models.PositiveIntegerField(validators=[MinValueValidator(10)])
+    # Optional: {"<json key>": "<expected value>", ...}. When set, the check asks for
+    # JSON, ignores the status code and judges the body by these keys only, so a
+    # deep health check can be "up" while components we don't care about fail.
+    assertions = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -40,6 +44,7 @@ class Check(models.Model):
         CONNECTION_REFUSED = "connection_refused"
         DNS = "dns"
         WRONG_STATUS = "wrong_status"
+        ASSERTION_FAILED = "assertion_failed"  # a JSON key missing or wrong
         ERROR = "error"
 
     # No single-column index: the (monitor, checked_at) index below starts with

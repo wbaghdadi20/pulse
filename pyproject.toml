@@ -9,7 +9,13 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings"
 python_files = ["test_*.py"]
+testpaths = ["tests"]
 addopts = "--reuse-db"
+# Import the project from the rootdir only. Without these, pytest-django adds the
+# folder holding manage.py to sys.path, which makes mutmut (running from a copy in
+# mutants/) test the original code instead of the mutated copy.
+pythonpath = ["."]
+django_find_project = false
 
 [tool.coverage.run]
 source = ["core", "monitors"]
@@ -18,3 +24,24 @@ omit = ["*/migrations/*", "*/management/*"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+
+[tool.mutmut]
+# The incident module alone has no survivors (27/27 killed), so mutate the whole
+# monitors + core source. Thin or declarative modules are left out: models/admin/apps
+# mutants are mostly string changes nobody should write tests for.
+source_paths = ["monitors/", "core/"]
+do_not_mutate = [
+    "*/migrations/*",
+    "*/management/*",
+    "*/admin.py",
+    "*/apps.py",
+    "*/models.py",
+]
+# mutmut runs the tests from a copy in mutants/ (it copies tests/ and pyproject.toml
+# itself); Django needs the settings there too.
+also_copy = ["config/"]
+
+[tool.ruff.lint.isort]
+# shop/ is a second project in this repo; name its packages so isort groups them
+# as first-party there too (ruff otherwise decides by whether the file exists at the root).
+known-first-party = ["catalog", "config", "core", "monitors", "tests"]
