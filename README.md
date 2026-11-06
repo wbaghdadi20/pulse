@@ -82,17 +82,17 @@ alongside other local stacks.
 Built with Django REST framework. Open any endpoint in a browser for DRF's
 browsable API.
 
-| Method + URL                   | Does                         | Success | Errors   |
-| ------------------------------ | ---------------------------- | ------- | -------- |
-| `GET /health`                  | liveness check               | 200     |          |
-| `POST /monitors/`              | create a monitor             | 201     | 400, 409 |
-| `GET /monitors/?limit&offset`  | list monitors (paginated)    | 200     |          |
-| `GET /monitors/<id>/`          | get one monitor              | 200     | 404      |
-| `PATCH /monitors/<id>/`        | change some fields           | 200     | 400, 404, 409 |
-| `DELETE /monitors/<id>/`       | delete a monitor             | 204     | 404      |
-| `POST /monitors/<id>/check/`   | call the monitor's URL once and record the result | 200 | 404 |
-| `GET /monitors/<id>/uptime/?days=7\|30\|90` | uptime %, p95 latency and check count | 200 | 400, 404 |
-| `POST /monitors/<id>/incidents/` | open an incident by hand   | 201     | 404, 409 |
+| Method + URL                                | Does                                              | Success | Errors        |
+| ------------------------------------------- | ------------------------------------------------- | ------- | ------------- |
+| `GET /health`                               | liveness check                                    | 200     |               |
+| `POST /monitors/`                           | create a monitor                                  | 201     | 400, 409      |
+| `GET /monitors/?limit&offset`               | list monitors (paginated)                         | 200     |               |
+| `GET /monitors/<id>/`                       | get one monitor                                   | 200     | 404           |
+| `PATCH /monitors/<id>/`                     | change some fields                                | 200     | 400, 404, 409 |
+| `DELETE /monitors/<id>/`                    | delete a monitor                                  | 204     | 404           |
+| `POST /monitors/<id>/check/`                | call the monitor's URL once and record the result | 200     | 404           |
+| `GET /monitors/<id>/uptime/?days=7\|30\|90` | uptime %, p95 latency and check count             | 200     | 400, 404      |
+| `POST /monitors/<id>/incidents/`            | open an incident by hand                          | 201     | 404, 409      |
 
 Example:
 
@@ -122,7 +122,7 @@ Every check result feeds a small state machine (`monitors/incidents.py`):
 - Anything else (a single failed check between successes, not enough checks yet)
   → nothing. Networks blip; alerting on every blip trains people to ignore alerts.
 - A monitor never has two open incidents: the state machine won't ask for one, and
-  the database forbids it anyway (see *Rules the database enforces*).
+  the database forbids it anyway (see _Rules the database enforces_).
 
 N and M are settings: `PULSE_FAIL_THRESHOLD` (default 3) and `PULSE_OK_THRESHOLD`
 (default 2). The decision function is pure (no Django, no database) and takes the
@@ -133,25 +133,25 @@ from Postgres, calls it, and applies the answer.
 
 Idempotent means calling it twice leaves the system in the same state as calling it once.
 
-| Endpoint             | Idempotent? | Why |
-| -------------------- | ----------- | --- |
-| `GET` (all)          | yes         | reads only, changes nothing |
-| `PATCH /monitors/<id>/` | yes      | it sets fields to values; setting `timeout_s` to 10 twice still leaves 10 |
-| `DELETE /monitors/<id>/` | yes     | after the first call the monitor is gone, and a second call changes nothing. The *response* differs (204, then 404), but idempotency is about the effect, not the response |
-| `POST /monitors/`    | no          | each call tries to create a new monitor (the second one gets 409 only because names are unique) |
-| `POST /monitors/<id>/check/` | no  | each call makes a new request to the target and records a new result |
+| Endpoint                     | Idempotent? | Why                                                                                                                                                                        |
+| ---------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET` (all)                  | yes         | reads only, changes nothing                                                                                                                                                |
+| `PATCH /monitors/<id>/`      | yes         | it sets fields to values; setting `timeout_s` to 10 twice still leaves 10                                                                                                  |
+| `DELETE /monitors/<id>/`     | yes         | after the first call the monitor is gone, and a second call changes nothing. The _response_ differs (204, then 404), but idempotency is about the effect, not the response |
+| `POST /monitors/`            | no          | each call tries to create a new monitor (the second one gets 409 only because names are unique)                                                                            |
+| `POST /monitors/<id>/check/` | no          | each call makes a new request to the target and records a new result                                                                                                       |
 
 ## Database
 
 Postgres, through the Django ORM. Tables: `monitors`, `checks` (one row per check
 result) and `incidents` (one row per outage; `resolved_at` is empty while it's open).
 
-| Command (prefix with `docker compose exec api`) | What it does |
-| ------------------------------------------------ | ------------ |
-| `python manage.py migrate`                        | apply all migrations (on an empty database: creates every table and index) |
-| `python manage.py makemigrations`                 | generate a migration after changing `models.py` |
-| `python manage.py sqlmigrate monitors 0002`       | show the SQL a migration will run |
-| `python manage.py seed_checks`                    | insert 500,000 fake checks for 10 `seed-N` monitors over the last 90 days (`--count`, `--monitors` to change) |
+| Command (prefix with `docker compose exec api`) | What it does                                                                                                  |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `python manage.py migrate`                      | apply all migrations (on an empty database: creates every table and index)                                    |
+| `python manage.py makemigrations`               | generate a migration after changing `models.py`                                                               |
+| `python manage.py sqlmigrate monitors 0002`     | show the SQL a migration will run                                                                             |
+| `python manage.py seed_checks`                  | insert 500,000 fake checks for 10 `seed-N` monitors over the last 90 days (`--count`, `--monitors` to change) |
 
 Change the schema only through migrations, never by hand in `psql`, so every
 database ends up identical.
@@ -212,10 +212,10 @@ index (`db_index=False`). Most of the remaining time is fetching the matching ro
 
 ### Rules the database enforces
 
-| Rule | Constraint | Violation → API |
-| ---- | ---------- | --------------- |
-| Monitor names are unique | `uq_monitor_name` (unique) | 409 |
-| One open incident per monitor | `uq_one_open_incident`: partial unique index on `monitor_id` `WHERE resolved_at IS NULL` | 409 |
+| Rule                          | Constraint                                                                               | Violation → API |
+| ----------------------------- | ---------------------------------------------------------------------------------------- | --------------- |
+| Monitor names are unique      | `uq_monitor_name` (unique)                                                               | 409             |
+| One open incident per monitor | `uq_one_open_incident`: partial unique index on `monitor_id` `WHERE resolved_at IS NULL` | 409             |
 
 The code never asks "is the name free?" or "is an incident already open?" before
 inserting. Two requests at the same moment could both get "yes" and both insert.
@@ -261,11 +261,11 @@ laptop). Switch how it answers:
 curl -X POST localhost:8200/mode -H 'Content-Type: application/json' -d '{"mode": "500"}'
 ```
 
-| Mode   | `GET /` does                | Pulse reports        |
-| ------ | --------------------------- | -------------------- |
-| `ok`   | 200                         | `ok: true`           |
-| `500`  | 500                         | `wrong_status`       |
-| `slow` | waits 10 s, then 200        | `timeout` (with `timeout_s` < 10) |
+| Mode   | `GET /` does                | Pulse reports                                                                           |
+| ------ | --------------------------- | --------------------------------------------------------------------------------------- |
+| `ok`   | 200                         | `ok: true`                                                                              |
+| `500`  | 500                         | `wrong_status`                                                                          |
+| `slow` | waits 10 s, then 200        | `timeout` (with `timeout_s` < 10)                                                       |
 | down   | `docker compose stop flaky` | `dns`: a stopped container disappears from Docker's DNS, so the name no longer resolves |
 
 `down` is deliberately not a mode: a crashed service doesn't answer politely, so
@@ -350,6 +350,8 @@ docker compose exec api pytest --cov      # with a coverage report
 docker compose exec api pytest --create-db  # after a new migration (tests reuse the DB otherwise)
 docker compose exec api pytest tests/monitors/test_incidents.py -v  # one file
 docker compose exec api pytest -m "not django_db"  # only the pure tests, no database (~0.05 s)
+docker compose exec api pytest tests/monitors/test_incidents_properties.py --hypothesis-show-statistics  # how often each branch ran
+docker compose exec api env HYPOTHESIS_PROFILE=ci pytest   # 2000 examples per property instead of 500
 ```
 
 Tests live in a root-level `tests/` package, one sub-package per Django app
@@ -362,13 +364,14 @@ database host as the app. `pytest-django` creates a separate `test_pulse` databa
 and wraps each test in a transaction that is rolled back, so tests never touch
 development data and always start empty.
 
-Three kinds of tests, fastest first:
+Four kinds of tests, fastest first:
 
-| Where | What | Needs |
-| ----- | ---- | ----- |
-| `tests/monitors/test_incidents.py`, `test_validators.py` | pure logic | nothing |
-| `tests/monitors/test_checks.py` | `run_check()` against `httpx.MockTransport`: every `error_type`, no network | nothing |
-| `tests/monitors/test_api.py`, `test_incident_flow.py`, `tests/core/` | the full stack through DRF's `APIClient` | the test database |
+| Where                                                                | What                                                                        | Needs             |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------------- | ----------------- |
+| `tests/monitors/test_incidents.py`, `test_validators.py`             | pure logic                                                                  | nothing           |
+| `tests/monitors/test_incidents_properties.py`                        | Hypothesis: random up/down sequences through `decide()`, four invariants    | nothing           |
+| `tests/monitors/test_checks.py`                                      | `run_check()` against `httpx.MockTransport`: every `error_type`, no network | nothing           |
+| `tests/monitors/test_api.py`, `test_incident_flow.py`, `tests/core/` | the full stack through DRF's `APIClient`                                    | the test database |
 
 Two things are injectable so tests can control them: `run_check(monitor, client=...)`
 takes an httpx client (tests pass a fake transport), and `get_uptime(..., now=...)`
