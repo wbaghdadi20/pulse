@@ -129,6 +129,43 @@ N and M are settings: `PULSE_FAIL_THRESHOLD` (default 3) and `PULSE_OK_THRESHOLD
 recent results plus the current state; `services.evaluate_incidents()` loads those
 from Postgres, calls it, and applies the answer.
 
+#### Choosing N and M
+
+The number that matters is not N itself but **time to detect = N × `interval_s`**:
+with the defaults and a 30 s interval, Pulse needs 90 s to open an incident and
+60 s to resolve one. 3-then-2 is not derived from our targets; it is the shape most
+systems default to. HAProxy health checks default to `fall 3` / `rise 2`, and three
+consecutive failures is also the default for Kubernetes probes (`failureThreshold`),
+AWS Route 53 health checks (`FailureThreshold`, 3 × 30 s: the same 90 s) and
+UptimeRobot. One failed check is noise (Azure reports that about 80% of single
+failures disappear on retry), so two is the minimum debounce and three adds a margin.
+
+Both settings must be between 1 and 10, the cap Route 53 and ALB use. A larger N
+does not make detection safer: `decide()` needs N *consecutive* failures, so a
+target that flaps would never open an incident at all. The bound is enforced by a
+Django system check (`core/system_checks.py`, error id `pulse.E001`) that runs on
+`manage.py check`, `migrate` and `runserver`, so a bad `.env` fails at startup
+instead of silently muting a monitor. To detect slower, raise `interval_s` instead.
+
+The values are a starting point, to be tuned from real incidents. `opened_at`,
+`resolved_at` and the check history give the signals; each one points at one knob:
+
+| Symptom in the data                                          | Diagnosis                            | Knob                                   |
+| ------------------------------------------------------------ | ------------------------------------ | -------------------------------------- |
+| Many incidents resolve almost as soon as they open           | N too low, or `timeout_s` too tight  | raise N, or lengthen `timeout_s` first |
+| Long gap between the first failed check and the incident     | N too high for the interval          | lower N, or shorten `interval_s`       |
+| Incidents reopen within minutes of resolving                 | M too low                            | raise M                                |
+| Incident stays open while checks have been green for a while | M too high                           | lower M                                |
+| Some monitors too noisy, others too quiet                    | global knobs don't fit every target  | per-monitor overrides (not built yet)  |
+
+Nobody auto-tunes these counts: adaptive products (Datadog anomaly monitors,
+Dynatrace baselining) learn *metric* baselines and need weeks of history. Sources:
+[HAProxy health checks](https://www.haproxy.com/documentation/haproxy-configuration-tutorials/reliability/health-checks/),
+[Kubernetes probes](https://kubernetes.io/docs/concepts/workloads/pods/probes/),
+[Route 53 HealthCheckConfig](https://docs.aws.amazon.com/Route53/latest/APIReference/API_HealthCheckConfig.html),
+[ALB health checks](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/target-group-health-checks.html),
+[Google SRE Workbook, Alerting on SLOs](https://sre.google/workbook/alerting-on-slos/).
+
 ### Which endpoints are idempotent
 
 Idempotent means calling it twice leaves the system in the same state as calling it once.
@@ -312,8 +349,8 @@ All settings come from environment variables in `.env` (never committed).
 | `POSTGRES_PASSWORD`    | Database password.                                                    |
 | `POSTGRES_HOST`        | Database host. `postgres` (the compose service name) inside Docker.   |
 | `POSTGRES_PORT`        | Database port inside the Docker network. Defaults to `5432`.          |
-| `PULSE_FAIL_THRESHOLD` | Failed checks in a row before an incident opens. Defaults to `3`.     |
-| `PULSE_OK_THRESHOLD`   | Successful checks in a row before it resolves. Defaults to `2`.       |
+| `PULSE_FAIL_THRESHOLD` | Failed checks in a row before an incident opens. 1–10, default `3`.   |
+| `PULSE_OK_THRESHOLD`   | Successful checks in a row before it resolves. 1–10, default `2`.     |
 
 ## Troubleshooting
 
