@@ -1,4 +1,4 @@
-"""Shared fixtures for the monitors app.
+"""Shared fixtures for the whole test suite.
 
 pytest-django does the heavy lifting: it creates a separate `test_<db>` database
 once per run, and wraps every test marked `django_db` in a transaction that is
