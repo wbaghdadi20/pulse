@@ -348,8 +348,14 @@ Passing -f compose.yaml tells Compose to use only that file, so the override isn
 docker compose exec api pytest            # run everything (~1 s)
 docker compose exec api pytest --cov      # with a coverage report
 docker compose exec api pytest --create-db  # after a new migration (tests reuse the DB otherwise)
-docker compose exec api pytest monitors/tests/test_incidents.py -v   # one file
+docker compose exec api pytest tests/monitors/test_incidents.py -v  # one file
+docker compose exec api pytest -m "not django_db"  # only the pure tests, no database (~0.05 s)
 ```
+
+Tests live in a root-level `tests/` package, one sub-package per Django app
+(`tests/monitors/`, `tests/core/`), with the shared fixtures (`api`, `monitor`,
+`fake_check`) in `tests/conftest.py` so every app can use them. Keeping tests out of
+the app packages also keeps them out of the coverage report's `source`.
 
 Tests run inside the `api` container because they need the same environment and
 database host as the app. `pytest-django` creates a separate `test_pulse` database
@@ -360,11 +366,12 @@ Three kinds of tests, fastest first:
 
 | Where | What | Needs |
 | ----- | ---- | ----- |
-| `monitors/tests/test_incidents.py`, `test_validators.py` | pure logic | nothing |
-| `monitors/tests/test_checks.py` | `run_check()` against `httpx.MockTransport`: every `error_type`, no network | nothing |
-| `monitors/tests/test_api.py`, `test_incident_flow.py`, `core/tests/` | the full stack through DRF's `APIClient` | the test database |
+| `tests/monitors/test_incidents.py`, `test_validators.py` | pure logic | nothing |
+| `tests/monitors/test_checks.py` | `run_check()` against `httpx.MockTransport`: every `error_type`, no network | nothing |
+| `tests/monitors/test_api.py`, `test_incident_flow.py`, `tests/core/` | the full stack through DRF's `APIClient` | the test database |
 
 Two things are injectable so tests can control them: `run_check(monitor, client=...)`
 takes an httpx client (tests pass a fake transport), and `get_uptime(..., now=...)`
-takes the current time. Coverage is configured in `pyproject.toml`; the suite
-sits at ~97%.
+takes the current time. The database tests are the ones marked `django_db`, so
+`-m "not django_db"` is the unit/integration switch: no extra markers to maintain.
+Coverage is configured in `pyproject.toml`; the suite sits at ~97%.

@@ -13,7 +13,7 @@ addopts = "--reuse-db"
 
 [tool.coverage.run]
 source = ["core", "monitors"]
-omit = ["*/migrations/*", "*/tests/*", "*/management/*"]
+omit = ["*/migrations/*", "*/management/*"]
 
 [tool.coverage.report]
 show_missing = true

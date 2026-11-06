@@ -12,8 +12,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from monitors.models import Check, Incident, Monitor
-
-from .conftest import MONITOR_PAYLOAD
+from tests.conftest import MONITOR_PAYLOAD
 
 pytestmark = pytest.mark.django_db  # every test in this file may use the database
 
