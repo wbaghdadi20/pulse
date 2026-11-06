@@ -10,6 +10,7 @@ How many examples run is set by the profile in tests/conftest.py.
 from hypothesis import event, given
 from hypothesis import strategies as st
 
+from core.system_checks import MAX_THRESHOLD
 from monitors.incidents import Action, decide
 
 OK, FAIL = True, False
@@ -17,7 +18,7 @@ OK, FAIL = True, False
 # "Strategies" describe the shape of the input; Hypothesis picks the values.
 # Thresholds stay small relative to the sequence so OPEN and RESOLVE actually
 # happen; --hypothesis-show-statistics shows how often (see event() below).
-thresholds = st.integers(min_value=1, max_value=5)
+thresholds = st.integers(min_value=1, max_value=MAX_THRESHOLD)
 sequences = st.lists(st.booleans(), max_size=60)
 
 
