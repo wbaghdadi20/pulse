@@ -5,6 +5,7 @@ either returns a Response or raises the same exception httpx would raise.
 """
 
 import socket
+import time
 
 import httpx
 import pytest
@@ -98,6 +99,40 @@ def test_other_network_error_is_classified_as_error():
     # e.g. a TLS failure: a ConnectError with no refused/dns cause underneath
     client = fake_client(raising(lambda req: httpx.ConnectError("tls", request=req)))
     assert run_check(make_monitor(), client)["error_type"] == "error"
+
+
+def test_without_a_client_it_opens_its_own(monkeypatch):
+    # Production passes no client. Make httpx.Client() hand back a fake one, so the
+    # "open a client, use it, close it" branch runs without the network.
+    real_client = httpx.Client  # fake_client() itself needs the real class
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kw: real_client(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200))
+        ),
+    )
+    assert run_check(make_monitor())["ok"] is True
+
+
+def test_sends_the_monitors_timeout():
+    seen = {}
+
+    def handler(request):
+        seen["timeout"] = request.extensions["timeout"]
+        return httpx.Response(200)
+
+    run_check(make_monitor(timeout_s=7), fake_client(handler))
+    assert seen["timeout"] == {"connect": 7, "read": 7, "write": 7, "pool": 7}
+
+
+def test_latency_is_measured_in_milliseconds():
+    def slow(request):
+        time.sleep(0.02)
+        return httpx.Response(200)
+
+    latency = run_check(make_monitor(), fake_client(slow))["latency_ms"]
+    assert 20 <= latency < 1000
 
 
 def test_uses_the_monitors_method_and_url():

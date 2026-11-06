@@ -48,7 +48,7 @@ def test_duplicate_name_returns_409(api, monitor):
     response = api.post(reverse("monitor-list"), MONITOR_PAYLOAD, format="json")
 
     assert response.status_code == 409
-    assert "already exists" in response.json()["detail"]
+    assert response.json() == {"detail": 'A monitor named "backend" already exists.'}
     assert Monitor.objects.count() == 1
 
 
@@ -152,6 +152,16 @@ def test_check_now_on_unknown_monitor_is_404(api, fake_check):
     assert api.post(reverse("monitor-check", args=[999])).status_code == 404
 
 
+def test_check_now_checks_that_monitor_and_no_other(api, monitor, fake_check):
+    other = Monitor.objects.create(**{**MONITOR_PAYLOAD, "name": "other"})
+
+    api.post(reverse("monitor-check", args=[other.pk]))
+
+    assert fake_check.calls == [other]
+    assert Check.objects.filter(monitor=other).count() == 1
+    assert not Check.objects.filter(monitor=monitor).exists()
+
+
 # --- uptime (with a pinned clock) ----------------------------------------------
 
 
@@ -185,6 +195,19 @@ def test_uptime_counts_only_the_requested_window(api, monitor, settings):
     assert month["uptime_percent"] == 50.0
 
 
+def test_uptime_counts_only_this_monitors_checks(api, monitor):
+    other = Monitor.objects.create(**{**MONITOR_PAYLOAD, "name": "other"})
+    now = timezone.now()
+    for owner, ok in [(monitor, True), (other, False), (other, False)]:
+        Check.objects.create(
+            monitor=owner, checked_at=now, ok=ok, status_code=200, latency_ms=1
+        )
+
+    body = api.get(reverse("monitor-uptime", args=[monitor.pk])).json()
+    assert body["checks"] == 1
+    assert body["uptime_percent"] == 100.0
+
+
 def test_uptime_with_no_checks_returns_nulls(api, monitor):
     body = api.get(reverse("monitor-uptime", args=[monitor.pk])).json()
     assert body == {
@@ -211,6 +234,9 @@ def test_second_open_incident_is_409_never_500(api, monitor):
     response = api.post(url, {}, format="json")
 
     assert response.status_code == 409
+    assert response.json() == {
+        "detail": f"Monitor {monitor.pk} already has an open incident."
+    }
     assert (
         Incident.objects.filter(monitor=monitor, resolved_at__isnull=True).count() == 1
     )
