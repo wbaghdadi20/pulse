@@ -35,9 +35,10 @@ Built with Django, PostgreSQL and Docker Compose.
 
    Also change `POSTGRES_PASSWORD` to a password of your choice.
 
-4. Build and start the stack:
+4. Create the network shared with the `shop` target, then build and start the stack:
 
    ```bash
+   docker network create pulse-net
    docker compose up --build -d --wait
    ```
 
@@ -55,6 +56,12 @@ Built with Django, PostgreSQL and Docker Compose.
 
    Expected: `HTTP/1.1 200 OK` with `{"status": "ok"}`.
 
+7. Optional, for something worth monitoring: start the `shop` target (see _shop_ below):
+
+   ```bash
+   docker compose -f shop/compose.yaml up --build -d
+   ```
+
 ## Services and ports
 
 | Service    | Description           | URL / port on your machine                 |
@@ -64,7 +71,8 @@ Built with Django, PostgreSQL and Docker Compose.
 | `flaky`    | test target (FastAPI) | http://localhost:8200                      |
 
 Host ports 8100 / 8200 / 5433 are used instead of 8000 / 5432 so Pulse can run
-alongside other local stacks.
+alongside other local stacks. The `shop` target is a separate Compose project
+(`shop/compose.yaml`) on http://localhost:8300.
 
 ## Everyday commands
 
@@ -111,7 +119,13 @@ Conventions:
   `{"count": <total>, "next": <url>, "previous": <url>, "results": [...]}`.
 - **"Check now" always returns 200.** A target that is down is a result, not an
   error in Pulse. `error_type` is one of `timeout`, `connection_refused`, `dns`,
-  `wrong_status`, or `error` (anything else, e.g. a TLS failure).
+  `wrong_status`, `assertion_failed`, or `error` (anything else, e.g. a TLS failure).
+- **JSON assertions** (optional field `assertions`): `{"<key>": "<expected value>"}`.
+  When set, the check sends `Accept: application/json`, ignores the status code and
+  passes only if every listed key has its expected value; otherwise `error_type` is
+  `assertion_failed`. Built for deep health checks that answer 500 because of a
+  component nobody cares about (see _shop_ below). Only flat string values, at
+  most 20 keys.
 
 ### Incidents and flap protection
 
@@ -308,31 +322,79 @@ curl -X POST localhost:8200/mode -H 'Content-Type: application/json' -d '{"mode"
 `down` is deliberately not a mode: a crashed service doesn't answer politely, so
 stopping the container is the realistic test. `docker compose start flaky` brings it back.
 
+## shop: a target with real dependencies
+
+`shop/` is a small Django app with its own Postgres (`shop-db`) and Redis
+(`shop-redis`), run as a **separate Compose project** so it behaves like a service
+someone else operates. Pulse reaches it as `http://shop:8000/` over the shared
+`pulse-net` network; from your laptop it is http://localhost:8300.
+
+| URL        | Depth   | Checks                                      | Down when                  |
+| ---------- | ------- | ------------------------------------------- | -------------------------- |
+| `/health`  | shallow | nothing: the process answers                 | the container is gone      |
+| `/ht/`     | deep    | Postgres `SELECT 1`, cache set/get, Redis `PING` (django-health-check) | any component fails → 500 |
+| `/`        | real    | one query against the catalogue             | Postgres is gone           |
+
+With `Accept: application/json`, `/ht/` returns one key per component:
+
+```json
+{"Database(alias='default')": "OK", "Cache(alias='default')": "OK", "Redis(db=0, host='shop-redis', port=6379)": "OK"}
+```
+
+Two monitors show the difference. The deep one asserts on the two components
+that matter and ignores the status code:
+
+```bash
+curl -X POST localhost:8100/monitors/ -H 'Content-Type: application/json' -d @- <<'EOF'
+{"name": "shop shallow", "url": "http://shop:8000/health", "timeout_s": 5, "interval_s": 30}
+EOF
+curl -X POST localhost:8100/monitors/ -H 'Content-Type: application/json' -d @- <<'EOF'
+{"name": "shop deep", "url": "http://shop:8000/ht/", "timeout_s": 5, "interval_s": 30,
+ "assertions": {"Database(alias='default')": "OK", "Redis(db=0, host='shop-redis', port=6379)": "OK"}}
+EOF
+```
+
+The Checkpoint 1 demo:
+
+```bash
+docker compose -f shop/compose.yaml stop shop-redis
+curl -X POST localhost:8100/monitors/<deep id>/check/      # ok: false, error_type: assertion_failed, status_code: 500
+curl -X POST localhost:8100/monitors/<shallow id>/check/   # ok: true
+docker compose -f shop/compose.yaml start shop-redis
+```
+
+`docker compose -f shop/compose.yaml stop shop` takes both down; the shallow one
+reports `connection_refused` or `dns`, depending on whether Docker still resolves the name.
+
 ## Networking
 
 Inside a container, `localhost` means **that container**, not your laptop. So from
-inside Pulse, `http://localhost:8000` is Pulse itself, not the EasyeSuite backend
-that your laptop reaches at `localhost:8000`.
+inside Pulse, `http://localhost:8000` is Pulse itself, not the shop that your
+laptop reaches at `localhost:8300`.
 
 Docker Compose gives each project its own network, and containers on the same
 network reach each other by **service name** through Docker's built-in DNS. That is
-why the `api` container reaches its database at `postgres:5432`. To monitor
-EasyeSuite, the `api` service joins EasyeSuite's network as an external network.
-Then `http://django:8000/ht/` and `http://frontend:3000/` resolve to those
-containers:
+why the `api` container reaches its database at `postgres:5432`. Pulse and `shop`
+are separate projects, so they share one extra network, `pulse-net`, created once
+by hand (`docker network create pulse-net`) and declared `external` in both files:
 
 ```yaml
-services:
-  api:
-    networks: [default, easyesuite]
-networks:
-  easyesuite:
-    external: true
-    name: <name from `docker network ls`>
+# compose.yaml (Pulse)                 # shop/compose.yaml
+services:                              services:
+  api:                                   shop:
+    networks: [default, monitoring]        networks: [default, monitoring]
+networks:                              networks:
+  monitoring:                            monitoring:
+    name: pulse-net                        name: pulse-net
+    external: true                         external: true
 ```
 
+Only `api` and `shop` join it. `shop-db` and `shop-redis` stay on shop's own
+network: Pulse cannot reach them directly, exactly like a real dependency behind
+someone else's service, and only learns about them through `shop`'s `/ht/`.
+
 Monitor URLs are validated with a custom validator because Django's `URLValidator`
-rejects hostnames without a dot (such as `django` or `frontend`).
+rejects hostnames without a dot (such as `shop` or `flaky`).
 
 ## Configuration
 
@@ -354,7 +416,7 @@ All settings come from environment variables in `.env` (never committed).
 
 ## Troubleshooting
 
-- **`port is already allocated`**: another program (often the EasyeSuite stack) is using
+- **`port is already allocated`**: another program (often another Compose stack) is using
   8100 or 5433. Stop it, or change the host port in `compose.yaml`.
 - **The app container keeps restarting or exits**: check `docker compose logs api`.
   A `KeyError` means a variable is missing from `.env`.
@@ -415,3 +477,41 @@ takes an httpx client (tests pass a fake transport), and `get_uptime(..., now=..
 takes the current time. The database tests are the ones marked `django_db`, so
 `-m "not django_db"` is the unit/integration switch: no extra markers to maintain.
 Coverage is configured in `pyproject.toml`; the suite sits at ~97%.
+
+### Mutation testing
+
+Coverage says a line ran; it doesn't say a test would notice if the line were
+wrong. [mutmut](https://mutmut.readthedocs.io/) changes the code on purpose
+(`<` to `<=`, a constant to `None`, an argument dropped) and runs the tests against
+each mutant. A mutant the tests don't kill is a gap, or an *equivalent mutant*
+(no observable change, e.g. `is` to `==` on booleans) that no test can kill.
+
+```bash
+docker compose exec api mutmut run        # a few minutes; results persist in mutants/
+docker compose exec api mutmut results    # the survivors
+docker compose exec api mutmut show <id>  # the diff of one mutant
+```
+
+Configuration is in `pyproject.toml`. `monitors/incidents.py` on its own had **27
+mutants, 0 survivors**, so the scope is the whole `monitors/` and `core/` source
+(migrations, models, admin and apps excluded). Scores on D5:
+
+| Run                                   | Mutants | Survived | Killed |
+| ------------------------------------- | ------- | -------- | ------ |
+| baseline                              | 392     | 63       | 84%    |
+| after 7 new tests                     | 392     | 45       | 89%    |
+| after the JSON-assertion feature too  | 436     | 54       | 88%    |
+
+The 18 killed survivors were real gaps, each now a test: the uptime and incident
+queries were never checked to filter by monitor (`test_uptime_counts_only_this_monitors_checks`,
+`test_incidents_are_per_monitor`), `run_check`'s own-client branch and the timeout
+it sends were untested, latency was never asserted to be in milliseconds, the 409
+messages and the incident `cause` were never read, and `PATCH` with invalid input
+had no test. Most of what survives is error-message wording, `output_field` on an
+aggregate Django infers anyway, and `update_fields` lists: equivalent or not worth
+a test. The remaining ones to look at are in `validate_assertions`.
+
+mutmut runs the tests from a copy in `mutants/`, which is why `pyproject.toml` pins
+pytest's import path to the rootdir (`pythonpath`, `django_find_project = false`):
+without that, pytest-django puts the real package first on `sys.path` and every
+mutant silently "survives" untested. See DEBUGGING.md, bug 3.
