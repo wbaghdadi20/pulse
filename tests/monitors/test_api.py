@@ -44,6 +44,45 @@ def test_create_accepts_docker_hostnames(api):
     assert api.post(reverse("monitor-list"), payload, format="json").status_code == 201
 
 
+def test_create_with_assertions_stores_and_returns_them(api):
+    payload = {**MONITOR_PAYLOAD, "assertions": {"Database(alias='default')": "OK"}}
+    response = api.post(reverse("monitor-list"), payload, format="json")
+
+    assert response.status_code == 201
+    assert response.json()["assertions"] == {"Database(alias='default')": "OK"}
+    assert Monitor.objects.get().assertions == {"Database(alias='default')": "OK"}
+
+
+def test_assertions_default_to_null(api):
+    response = api.post(reverse("monitor-list"), MONITOR_PAYLOAD, format="json")
+    assert response.json()["assertions"] is None
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        ["DatabaseBackend"],  # a list, not an object
+        {},  # nothing to assert
+        {"DatabaseBackend": 1},  # expected value must be a string
+        {"DatabaseBackend": {"status": "OK"}},  # no nesting
+    ],
+)
+def test_malformed_assertions_return_400(api, bad):
+    payload = {**MONITOR_PAYLOAD, "assertions": bad}
+    response = api.post(reverse("monitor-list"), payload, format="json")
+    assert response.status_code == 400
+    assert set(response.json()) == {"assertions"}
+
+
+def test_patch_with_invalid_input_returns_400(api, monitor):
+    response = api.patch(
+        reverse("monitor-detail", args=[monitor.pk]), {"timeout_s": 99}, format="json"
+    )
+    assert response.status_code == 400
+    monitor.refresh_from_db()
+    assert monitor.timeout_s == 5  # unchanged
+
+
 def test_duplicate_name_returns_409(api, monitor):
     response = api.post(reverse("monitor-list"), MONITOR_PAYLOAD, format="json")
 
@@ -240,6 +279,13 @@ def test_second_open_incident_is_409_never_500(api, monitor):
     assert (
         Incident.objects.filter(monitor=monitor, resolved_at__isnull=True).count() == 1
     )
+
+
+def test_incident_with_an_overlong_cause_is_400(api, monitor):
+    url = reverse("monitor-incidents", args=[monitor.pk])
+    response = api.post(url, {"cause": "x" * 256}, format="json")
+    assert response.status_code == 400
+    assert not Incident.objects.filter(monitor=monitor).exists()
 
 
 def test_incident_can_reopen_after_being_resolved(api, monitor):
