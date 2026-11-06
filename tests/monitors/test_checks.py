@@ -135,6 +135,70 @@ def test_latency_is_measured_in_milliseconds():
     assert 20 <= latency < 1000
 
 
+# --- JSON assertions (deep health checks) ------------------------------------------
+
+DEEP = {
+    "Database(alias='default')": "OK",
+    "Redis(db=0, host='shop-redis', port=6379)": "OK",
+}
+HEALTHY = {**DEEP, "Storage(alias='default')": "unavailable: no bucket"}
+
+
+def json_response(status: int, body) -> httpx.Response:
+    return httpx.Response(status, json=body)
+
+
+def test_assertions_judge_the_body_not_the_status():
+    # The deep check answers 500 because storage is down, but the keys we care about are OK.
+    client = fake_client(lambda request: json_response(500, HEALTHY))
+    result = run_check(make_monitor(assertions=DEEP), client)
+    assert result["ok"] is True
+    assert result["status_code"] == 500  # still recorded, for the operator
+    assert result["error_type"] is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {
+            **HEALTHY,
+            "Redis(db=0, host='shop-redis', port=6379)": "unavailable: refused",
+        },
+        {"Database(alias='default')": "OK"},  # redis key missing
+        ["not", "an", "object"],
+    ],
+)
+def test_assertions_fail_when_a_key_is_wrong_or_missing(body):
+    client = fake_client(lambda request: json_response(200, body))
+    result = run_check(make_monitor(assertions=DEEP), client)
+    assert result["ok"] is False
+    assert result["error_type"] == "assertion_failed"
+
+
+def test_assertions_fail_on_a_non_json_body():
+    client = fake_client(lambda request: httpx.Response(200, text="<html>fine</html>"))
+    result = run_check(make_monitor(assertions=DEEP), client)
+    assert result["error_type"] == "assertion_failed"
+
+
+def test_assertions_ask_for_json_and_plain_checks_do_not():
+    seen = {}
+
+    def handler(request):
+        seen["accept"] = request.headers["accept"]
+        return json_response(200, HEALTHY)
+
+    run_check(make_monitor(assertions=DEEP), fake_client(handler))
+    assert seen["accept"] == "application/json"
+    run_check(make_monitor(), fake_client(handler))
+    assert seen["accept"] == "*/*"  # httpx's default: the target decides the format
+
+
+def test_network_errors_still_classify_with_assertions():
+    client = fake_client(raising(lambda req: httpx.ReadTimeout("t", request=req)))
+    assert run_check(make_monitor(assertions=DEEP), client)["error_type"] == "timeout"
+
+
 def test_uses_the_monitors_method_and_url():
     seen = {}
 
