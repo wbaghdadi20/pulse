@@ -101,7 +101,7 @@ browsable API.
 | `POST /monitors/`                           | create a monitor                                  | 201     | 400, 409      |
 | `GET /monitors/?limit&offset`               | list monitors (paginated)                         | 200     |               |
 | `GET /monitors/<id>/`                       | get one monitor                                   | 200     | 404           |
-| `PATCH /monitors/<id>/`                     | change some fields                                | 200     | 400, 404, 409 |
+| `PATCH /monitors/<id>/`                     | change some fields (incl. `maintenance_until`)    | 200     | 400, 404, 409 |
 | `DELETE /monitors/<id>/`                    | delete a monitor                                  | 204     | 404           |
 | `POST /monitors/<id>/check/`                | call the monitor's URL once and record the result | 200     | 404           |
 | `GET /monitors/<id>/uptime/?days=7\|30\|90` | uptime %, p95 latency and check count             | 200     | 400, 404      |
@@ -376,6 +376,16 @@ Payload, for example:
  "incident_kind": "availability", "cause": "3 failed checks in a row",
  "opened_at": "2026-11-10T03:18:42Z", "resolved_at": "2026-11-10T03:19:22Z", "downtime_seconds": 39}
 ```
+
+### Maintenance windows
+
+A planned deploy is not an outage. `PATCH /monitors/<id>/` with
+`{"maintenance_until": "<ISO datetime in the future>"}` puts a monitor in
+maintenance until then; `null` ends it now. While it lasts, checks still run and are
+saved (uptime stays honest), but the state machine is skipped: no incident opens or
+resolves and no alert is sent. The first check after the window judges normally, so
+a service that is still down when the window ends gets its incident then. Opening an
+incident by hand is not affected.
 
 ### catcher: the alert inbox
 

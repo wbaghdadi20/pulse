@@ -66,6 +66,9 @@ def evaluate_incidents(monitor: Monitor) -> incidents.Action:
     This is the I/O half: load the recent results and the current state, ask
     incidents.decide() (pure), then open or resolve in the database.
     """
+    if monitor.in_maintenance():
+        return incidents.Action.NOTHING
+
     fail_threshold = settings.PULSE_FAIL_THRESHOLD
     ok_threshold = settings.PULSE_OK_THRESHOLD
 

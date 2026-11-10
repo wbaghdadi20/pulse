@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
@@ -27,6 +29,9 @@ class Monitor(models.Model):
     assertions = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     last_checked_at = models.DateTimeField(null=True, blank=True)
+    # While set and in the future: checks run and are saved, but no incident opens
+    # or resolves and no alert is sent (a planned deploy is not an outage).
+    maintenance_until = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "monitors"
@@ -37,6 +42,11 @@ class Monitor(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
+    def in_maintenance(self, now: datetime | None = None) -> bool:
+        if self.maintenance_until is None:
+            return False
+        return self.maintenance_until > (now or timezone.now())
 
 
 class Check(models.Model):

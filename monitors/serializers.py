@@ -1,5 +1,7 @@
+from datetime import datetime
 from typing import Any
 
+from django.utils import timezone
 from rest_framework import serializers
 
 from .models import Incident, Monitor
@@ -21,6 +23,7 @@ class MonitorSerializer(serializers.ModelSerializer[Monitor]):
             "assertions",
             "created_at",
             "last_checked_at",
+            "maintenance_until",
         ]
         read_only_fields = ["id", "created_at", "last_checked_at"]
         # ModelSerializer adds a UniqueValidator to `name` (from the model's
@@ -28,6 +31,13 @@ class MonitorSerializer(serializers.ModelSerializer[Monitor]):
         # races. Uniqueness is left to the database instead; the service turns a
         # violation into 409. max_length is kept: DRF adds it separately.
         extra_kwargs: dict[str, dict[str, Any]] = {"name": {"validators": []}}
+
+    def validate_maintenance_until(self, value: datetime | None) -> datetime | None:
+        if value is not None and value <= timezone.now():
+            raise serializers.ValidationError(
+                "Must be in the future. Send null to end maintenance now."
+            )
+        return value
 
     def validate_assertions(self, value: object) -> dict[str, str] | None:
         """A JSONField accepts any JSON; we want a flat {key: expected string} object."""
