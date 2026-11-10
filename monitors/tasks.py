@@ -10,8 +10,11 @@ from typing import Any
 import httpx
 from celery import Task, shared_task
 from celery.utils.log import get_task_logger
+from django.conf import settings
 from django.db.models import DateTimeField, ExpressionWrapper, F, Q
 from django.utils import timezone
+
+from core.system_checks import MAX_ALERT_ATTEMPTS
 
 from . import alerting, services
 from .models import Alert, Monitor
@@ -50,7 +53,7 @@ def run_check(monitor_id: int) -> None:
     )
 
 
-@shared_task(bind=True, max_retries=alerting.MAX_ATTEMPTS - 1)
+@shared_task(bind=True, max_retries=MAX_ALERT_ATTEMPTS - 1)
 def send_alert(self: Task[Any, Any], alert_id: int) -> None:
     """Deliver one alert at most once; retry with exponential backoff while the receiver fails.
 
@@ -69,7 +72,8 @@ def send_alert(self: Task[Any, Any], alert_id: int) -> None:
     try:
         alerting.deliver(alert)
     except httpx.HTTPError as exc:
-        if alert.attempts >= alerting.MAX_ATTEMPTS:
+        max_attempts: int = settings.PULSE_ALERT_MAX_ATTEMPTS
+        if alert.attempts >= max_attempts:
             alerting.mark_failed(alert)
             log.error(
                 "alert %d failed after %d attempts: %r", alert_id, alert.attempts, exc
