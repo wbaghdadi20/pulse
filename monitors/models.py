@@ -76,8 +76,14 @@ class Check(models.Model):
 
 
 class Incident(models.Model):
+    class Kind(models.TextChoices):
+        AVAILABILITY = "availability"
+
     monitor = models.ForeignKey(
         Monitor, on_delete=models.CASCADE, related_name="incidents"
+    )
+    kind = models.CharField(
+        max_length=32, choices=Kind.choices, default=Kind.AVAILABILITY
     )
     opened_at = models.DateTimeField(default=timezone.now)
     resolved_at = models.DateTimeField(null=True, blank=True)  # NULL while open
@@ -86,15 +92,16 @@ class Incident(models.Model):
     class Meta:
         db_table = "incidents"
         constraints = [
-            # At most one open incident per monitor, enforced by Postgres:
-            # a partial unique index over rows where resolved_at IS NULL.
+            # At most one open incident per (monitor, kind), enforced by Postgres:
+            # a partial unique index over rows where resolved_at IS NULL. Two kinds
+            # can be open on the same monitor at once; same kinds cannot.
             models.UniqueConstraint(
-                fields=["monitor"],
+                fields=["monitor", "kind"],
                 condition=Q(resolved_at__isnull=True),
-                name="uq_one_open_incident",
+                name="uq_one_open_incident_per_kind",
             ),
         ]
 
     def __str__(self) -> str:
         state = "open" if self.resolved_at is None else "resolved"
-        return f"Incident {self.pk} on {self.monitor_id} ({state})"
+        return f"Incident {self.pk} on {self.monitor_id} ({self.kind}, {state})"

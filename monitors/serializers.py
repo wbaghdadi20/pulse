@@ -47,9 +47,9 @@ class MonitorSerializer(serializers.ModelSerializer):
 class IncidentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Incident
-        fields = ["id", "monitor", "opened_at", "resolved_at", "cause"]
+        fields = ["id", "monitor", "kind", "opened_at", "resolved_at", "cause"]
         read_only_fields = ["id", "monitor", "opened_at", "resolved_at"]
-        # The "one open incident" rule is enforced by the database, not by DRF.
+        # The "one open incident per kind" rule is enforced by the database, not by DRF.
         validators = []
 
 
