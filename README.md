@@ -135,8 +135,10 @@ Every check result feeds a small state machine (`monitors/incidents.py`):
 - Open incident and the last **M** checks all passed → resolve it.
 - Anything else (a single failed check between successes, not enough checks yet)
   → nothing. Networks blip; alerting on every blip trains people to ignore alerts.
-- A monitor never has two open incidents: the state machine won't ask for one, and
-  the database forbids it anyway (see _Rules the database enforces_).
+- A monitor never has two open incidents of the same kind: the state machine won't
+  ask for one, and the database forbids it anyway (see _Rules the database enforces_).
+  Incidents carry a `kind`; `availability` is the only one so far, and the only one
+  the state machine opens.
 
 N and M are settings: `PULSE_FAIL_THRESHOLD` (default 3) and `PULSE_OK_THRESHOLD`
 (default 2). The decision function is pure (no Django, no database) and takes the
@@ -266,7 +268,7 @@ index (`db_index=False`). Most of the remaining time is fetching the matching ro
 | Rule                          | Constraint                                                                               | Violation → API |
 | ----------------------------- | ---------------------------------------------------------------------------------------- | --------------- |
 | Monitor names are unique      | `uq_monitor_name` (unique)                                                               | 409             |
-| One open incident per monitor | `uq_one_open_incident`: partial unique index on `monitor_id` `WHERE resolved_at IS NULL` | 409             |
+| One open incident per monitor and kind | `uq_one_open_incident_per_kind`: partial unique index on `(monitor_id, kind)` `WHERE resolved_at IS NULL` | 409             |
 
 The code never asks "is the name free?" or "is an incident already open?" before
 inserting. Two requests at the same moment could both get "yes" and both insert.
