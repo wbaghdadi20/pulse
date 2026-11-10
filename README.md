@@ -353,8 +353,9 @@ queued with `transaction.on_commit`, so a worker can never pick up a message for
 row that isn't visible yet.
 
 **Retries.** The receiver being unreachable, timing out or answering non-2xx is a
-task failure: `send_alert` retries with exponential backoff, `PULSE_ALERT_MAX_ATTEMPTS`
-attempts in all (default 5), counting each attempt in `alerts.attempts` before the
+task failure: `send_alert` retries with exponential backoff and jitter (attempt *n*
+waits between 2ⁿ and 2ⁿ⁺¹ seconds, so alerts that failed together don't retry
+together), `PULSE_ALERT_MAX_ATTEMPTS` attempts in all (default 5), counting each attempt in `alerts.attempts` before the
 request so a crash mid-request still counts. After the last failure the row is
 marked `failed`; nothing stays `pending` forever. A *monitored target* being down is never a task
 failure: `run_check` records the result and finishes normally, so it is never
@@ -393,7 +394,7 @@ curl -X POST localhost:8200/mode -H 'Content-Type: application/json' -d '{"mode"
 # ~40 s later: two passing checks, the incident resolves, a second alert with downtime_seconds
 docker compose stop catcher                                     # now break the receiver
 curl -X POST localhost:8200/mode -H 'Content-Type: application/json' -d '{"mode": "500"}'
-# the worker log shows five attempts 2, 4, 8, 16 s apart, then "failed after 5 attempts"
+# the worker log shows five attempts with growing, jittered delays, then "failed after 5 attempts"
 docker compose start catcher
 ```
 
