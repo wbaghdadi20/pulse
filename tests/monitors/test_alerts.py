@@ -121,15 +121,27 @@ def test_send_alert_posts_a_signed_payload_and_marks_the_row_sent(alert, webhook
     assert alert.sent_at is not None
 
 
-def test_a_resolved_alert_carries_the_downtime(incident, webhook):
-    services.resolve_incident(incident, now=incident.opened_at + timedelta(seconds=74))
+def test_the_payload_is_the_documented_contract(incident, webhook):
+    """Every key the catcher (and a future Slack integration) can rely on, pinned."""
+    resolved_at = incident.opened_at + timedelta(seconds=74)
+    services.resolve_incident(incident, now=resolved_at)
     alert = Alert.objects.get(incident=incident, kind=Alert.Kind.RESOLVED)
 
     tasks.send_alert(alert.pk)
 
-    body = json.loads(webhook.requests[0].content)
-    assert body["event"] == "incident.resolved"
-    assert body["downtime_seconds"] == 74
+    (request,) = webhook.requests
+    assert request.headers["content-type"] == "application/json"
+    assert json.loads(request.content) == {
+        "event": "incident.resolved",
+        "monitor": incident.monitor.name,
+        "monitor_id": incident.monitor.pk,
+        "incident_id": incident.pk,
+        "incident_kind": "availability",
+        "cause": "test",
+        "opened_at": incident.opened_at.isoformat(),
+        "resolved_at": resolved_at.isoformat(),
+        "downtime_seconds": 74,
+    }
 
 
 def test_running_send_alert_twice_sends_once(alert, webhook):
