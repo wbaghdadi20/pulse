@@ -295,3 +295,46 @@ def test_incident_can_reopen_after_being_resolved(api, monitor):
 
     assert api.post(url, {}, format="json").status_code == 201
     assert Incident.objects.filter(monitor=monitor).count() == 2
+
+
+# --- maintenance windows -----------------------------------------------------------
+
+
+def test_patch_puts_a_monitor_in_maintenance(api, monitor):
+    until = timezone.now() + timedelta(hours=1)
+    response = api.patch(
+        reverse("monitor-detail", args=[monitor.pk]),
+        {"maintenance_until": until.isoformat()},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    monitor.refresh_from_db()
+    assert monitor.maintenance_until == until
+    assert monitor.in_maintenance()
+
+
+def test_maintenance_until_in_the_past_is_400(api, monitor):
+    response = api.patch(
+        reverse("monitor-detail", args=[monitor.pk]),
+        {"maintenance_until": (timezone.now() - timedelta(minutes=1)).isoformat()},
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert "maintenance_until" in response.json()
+
+
+def test_null_ends_maintenance_now(api, monitor):
+    Monitor.objects.filter(pk=monitor.pk).update(
+        maintenance_until=timezone.now() + timedelta(hours=1)
+    )
+    response = api.patch(
+        reverse("monitor-detail", args=[monitor.pk]),
+        {"maintenance_until": None},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    monitor.refresh_from_db()
+    assert not monitor.in_maintenance()

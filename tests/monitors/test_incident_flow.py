@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from monitors import services
 from monitors.incidents import Action
-from monitors.models import Check, Incident, Monitor
+from monitors.models import Alert, Check, Incident, Monitor
 from tests.conftest import MONITOR_PAYLOAD
 
 pytestmark = pytest.mark.django_db
@@ -122,3 +122,64 @@ def test_thresholds_come_from_settings(monitor, fake_check, settings):
     fake_check(ok=False)
     services.check_monitor(monitor)
     assert open_incidents(monitor).count() == 1
+
+
+# --- maintenance windows -----------------------------------------------------------
+
+
+def in_maintenance(monitor, *, for_seconds=3600):
+    monitor.maintenance_until = timezone.now() + timedelta(seconds=for_seconds)
+    monitor.save(update_fields=["maintenance_until"])
+
+
+def test_in_maintenance_checks_are_saved_but_no_incident_opens(monitor, fake_check):
+    in_maintenance(monitor)
+    fake_check(ok=False)
+
+    for _ in range(4):
+        assert services.check_monitor(monitor)["ok"] is False
+
+    assert Check.objects.filter(monitor=monitor).count() == 4
+    assert not Incident.objects.filter(monitor=monitor).exists()
+    assert not Alert.objects.exists()
+
+
+def test_in_maintenance_an_open_incident_is_left_alone(monitor, fake_check):
+    fake_check(ok=False)
+    for _ in range(3):
+        services.check_monitor(monitor)
+    incident = open_incidents(monitor).get()
+    in_maintenance(monitor)
+
+    fake_check(ok=True)
+    for _ in range(3):
+        services.check_monitor(monitor)
+
+    incident.refresh_from_db()
+    assert incident.resolved_at is None
+    assert not Alert.objects.filter(
+        incident=incident, kind=Alert.Kind.RESOLVED
+    ).exists()
+
+
+def test_when_maintenance_ends_the_next_check_judges_normally(monitor, fake_check):
+    in_maintenance(monitor)
+    fake_check(ok=False)
+    for _ in range(3):
+        services.check_monitor(monitor)
+    assert not open_incidents(monitor).exists()
+
+    in_maintenance(monitor, for_seconds=-1)  # the window is over
+    services.check_monitor(monitor)
+
+    assert open_incidents(monitor).count() == 1, (
+        "still down after the window: a real incident"
+    )
+
+
+def test_evaluate_reports_nothing_during_maintenance(monitor, fake_check):
+    in_maintenance(monitor)
+    fake_check(ok=False)
+    for _ in range(3):
+        assert services.check_monitor(monitor) is not None
+    assert services.evaluate_incidents(monitor) is Action.NOTHING
