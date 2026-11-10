@@ -1,12 +1,13 @@
 import socket
 import time
+from typing import Any
 
 import httpx
 
 from .models import Monitor
 
 
-def run_check(monitor: Monitor, client: httpx.Client | None = None) -> dict:
+def run_check(monitor: Monitor, client: httpx.Client | None = None) -> dict[str, Any]:
     """Call the monitor's URL once.
 
     A failing target is a normal result for a monitor, so this never raises:
@@ -55,7 +56,7 @@ def _send(client: httpx.Client, monitor: Monitor) -> httpx.Response:
     )
 
 
-def _assertions_hold(response: httpx.Response, assertions: dict) -> bool:
+def _assertions_hold(response: httpx.Response, assertions: dict[str, str]) -> bool:
     """True if the body is a JSON object with every asserted key at its expected value."""
     try:
         body = response.json()

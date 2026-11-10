@@ -1,9 +1,11 @@
+from typing import Any
+
 from rest_framework import serializers
 
 from .models import Incident, Monitor
 
 
-class MonitorSerializer(serializers.ModelSerializer):
+class MonitorSerializer(serializers.ModelSerializer[Monitor]):
     """Fields, limits and the URL validator all come from the Monitor model."""
 
     class Meta:
@@ -24,9 +26,9 @@ class MonitorSerializer(serializers.ModelSerializer):
         # UniqueConstraint): a SELECT before the INSERT that answers 400 and still
         # races. Uniqueness is left to the database instead; the service turns a
         # violation into 409. max_length is kept: DRF adds it separately.
-        extra_kwargs = {"name": {"validators": []}}
+        extra_kwargs: dict[str, dict[str, Any]] = {"name": {"validators": []}}
 
-    def validate_assertions(self, value):
+    def validate_assertions(self, value: object) -> dict[str, str] | None:
         """A JSONField accepts any JSON; we want a flat {key: expected string} object."""
         if value is None:
             return None
@@ -44,16 +46,16 @@ class MonitorSerializer(serializers.ModelSerializer):
         return value
 
 
-class IncidentSerializer(serializers.ModelSerializer):
+class IncidentSerializer(serializers.ModelSerializer[Incident]):
     class Meta:
         model = Incident
         fields = ["id", "monitor", "kind", "opened_at", "resolved_at", "cause"]
         read_only_fields = ["id", "monitor", "opened_at", "resolved_at"]
         # The "one open incident per kind" rule is enforced by the database, not by DRF.
-        validators = []
+        validators: list[Any] = []
 
 
-class UptimeQuerySerializer(serializers.Serializer):
+class UptimeQuerySerializer(serializers.Serializer[Any]):
     """Validates the query string of GET /monitors/<id>/uptime/."""
 
     days = serializers.ChoiceField(choices=[7, 30, 90], default=7)

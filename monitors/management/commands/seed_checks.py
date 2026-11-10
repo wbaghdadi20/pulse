@@ -1,4 +1,6 @@
-from django.core.management.base import BaseCommand
+from typing import Any
+
+from django.core.management.base import BaseCommand, CommandParser
 from django.db import connection, transaction
 
 from monitors.models import Monitor
@@ -28,12 +30,14 @@ INSERT_FAKE_CHECKS = """
 class Command(BaseCommand):
     help = "Insert fake check results for seed monitors, spread over the last 90 days."
 
-    def add_arguments(self, parser):
+    def add_arguments(self, parser: CommandParser) -> None:
         parser.add_argument("--count", type=int, default=500_000)
         parser.add_argument("--monitors", type=int, default=10)
 
     @transaction.atomic
-    def handle(self, *args, count: int, monitors: int, **options):
+    def handle(self, *args: Any, **options: Any) -> None:
+        count: int = options["count"]
+        monitors: int = options["monitors"]
         monitor_ids = [
             Monitor.objects.get_or_create(
                 name=f"seed-{i}",

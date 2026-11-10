@@ -434,6 +434,7 @@ Install the git hooks once after cloning (requires [pre-commit](https://pre-comm
     pre-commit install
 
 Run all checks manually with `pre-commit run --all-files`.
+The hooks run ruff and mypy (strict, with django-stubs). Run the type checker alone with `mypy`.
 
 `compose.override.yaml` is merged automatically by Docker Compose. It mounts the
 code into the `api` container and runs Django's `runserver`, which reloads on save.

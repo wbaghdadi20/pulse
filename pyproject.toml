@@ -45,3 +45,26 @@ also_copy = ["config/"]
 # shop/ is a second project in this repo; name its packages so isort groups them
 # as first-party there too (ruff otherwise decides by whether the file exists at the root).
 known-first-party = ["catalog", "config", "core", "monitors", "tests"]
+
+[tool.mypy]
+# --strict for the source; see the override below for the tests.
+strict = true
+# Not part of --strict: flag code that no branch can reach (a dead isinstance arm).
+warn_unreachable = true
+plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
+# Explicit: shop/ and flaky/ are separate apps with their own settings and
+# dependencies, and shop/ reuses the package names config/ and core/.
+files = ["config", "core", "monitors", "tests", "manage.py"]
+exclude = ["/migrations/"]
+
+[[tool.mypy.overrides]]
+# Test functions take fixtures by name; annotating every `api`, `monitor`, `settings`
+# parameter adds nothing, and the same goes for small helpers next to the tests.
+# Bodies are still type-checked (check_untyped_defs stays on).
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+
+[tool.django-stubs]
+django_settings_module = "config.settings_typecheck"

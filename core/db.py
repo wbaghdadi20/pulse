@@ -1,5 +1,8 @@
+from typing import Any
+
 from django.db import IntegrityError
 from django.db.models import Aggregate, FloatField
+from django.db.models.expressions import Combinable
 
 
 class PercentileCont(Aggregate):
@@ -13,7 +16,9 @@ class PercentileCont(Aggregate):
     template = "%(function)s(%(fraction)s) WITHIN GROUP (ORDER BY %(expressions)s)"
     output_field = FloatField()
 
-    def __init__(self, expression, fraction: float, **extra):
+    def __init__(
+        self, expression: Combinable | str, fraction: float, **extra: Any
+    ) -> None:
         if not 0 <= fraction <= 1:
             raise ValueError("fraction must be between 0 and 1")
         # float() guarantees only a number ever reaches the SQL template.

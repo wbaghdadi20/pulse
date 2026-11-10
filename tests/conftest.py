@@ -6,7 +6,9 @@ rolled back afterwards, so each test starts from empty tables.
 """
 
 import os
+from typing import Any
 
+import httpx
 import pytest
 from hypothesis import settings as hypothesis_settings
 from rest_framework.test import APIClient
@@ -40,29 +42,37 @@ def monitor(db) -> Monitor:
     return Monitor.objects.create(**MONITOR_PAYLOAD)
 
 
-@pytest.fixture
-def fake_check(monkeypatch):
-    """Replace the real HTTP call with a canned result.
+class FakeCheck:
+    """Stand-in for monitors.checks.run_check that returns a canned result.
 
-    Returns a function to set what the next checks report, e.g. fake_check(ok=False).
+    Call it to set what the next checks report, e.g. fake_check(ok=False).
+    `calls` lists the monitors run_check was called with, in order.
     """
-    state = {"result": _result(ok=True)}
-    calls: list = []
 
-    def set_result(**kwargs):
-        state["result"] = _result(**kwargs)
+    def __init__(self) -> None:
+        self.result = _result(ok=True)
+        self.calls: list[Monitor] = []
 
-    def fake_run_check(monitor, client=None):
-        calls.append(monitor)
-        return dict(state["result"])
+    def __call__(self, **kwargs: Any) -> None:
+        self.result = _result(**kwargs)
 
+    def run_check(
+        self, monitor: Monitor, client: httpx.Client | None = None
+    ) -> dict[str, Any]:
+        self.calls.append(monitor)
+        return dict(self.result)
+
+
+@pytest.fixture
+def fake_check(monkeypatch: pytest.MonkeyPatch) -> FakeCheck:
+    """Replace the real HTTP call with a canned result."""
+    fake = FakeCheck()
     # services.py imported run_check by name, so patch it where it's looked up.
-    monkeypatch.setattr("monitors.services.run_check", fake_run_check)
-    set_result.calls = calls  # the monitors run_check was called with, in order
-    return set_result
+    monkeypatch.setattr("monitors.services.run_check", fake.run_check)
+    return fake
 
 
-def _result(ok: bool = True, **overrides) -> dict:
+def _result(ok: bool = True, **overrides: Any) -> dict[str, Any]:
     base = {
         "ok": ok,
         "status_code": 200 if ok else None,

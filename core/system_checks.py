@@ -5,6 +5,10 @@ fast with an error id instead of surfacing later as a monitor that never opens
 an incident (a threshold larger than any streak of checks).
 """
 
+from collections.abc import Sequence
+from typing import Any
+
+from django.apps import AppConfig
 from django.conf import settings
 from django.core.checks import Error, register
 
@@ -14,7 +18,9 @@ MAX_THRESHOLD = 10
 
 
 @register()
-def check_incident_thresholds(app_configs, **kwargs):
+def check_incident_thresholds(
+    app_configs: Sequence[AppConfig] | None, **kwargs: Any
+) -> list[Error]:
     errors = []
     for name in ("PULSE_FAIL_THRESHOLD", "PULSE_OK_THRESHOLD"):
         value = getattr(settings, name)
