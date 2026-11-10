@@ -9,6 +9,7 @@ payload and mark the row sent. Retrying is the task's job, not this module's.
 import hashlib
 import hmac
 import json
+import random
 from typing import Any
 
 import httpx
@@ -22,6 +23,7 @@ from core.db import violated_constraint
 from .models import Alert, Incident
 
 SIGNATURE_HEADER = "X-Pulse-Signature"
+_rng = random.Random()
 
 
 def queue_alert(incident: Incident, kind: str) -> Alert | None:
@@ -60,6 +62,17 @@ def deliver(alert: Alert) -> None:
     Alert.objects.filter(pk=alert.pk).update(
         status=Alert.Status.SENT, sent_at=timezone.now()
     )
+
+
+def retry_delay(attempt: int, rng: random.Random = _rng) -> float:
+    """Seconds to wait after a failed attempt: 2**attempt plus up to the same again.
+
+    The exponential part gives a struggling receiver time to recover. The random
+    part is jitter: when the receiver dies, every pending alert fails in the same
+    second, and without it they would all retry in the same second too, four times.
+    """
+    floor = float(2**attempt)
+    return floor + rng.uniform(0, floor)
 
 
 def mark_failed(alert: Alert) -> None:
