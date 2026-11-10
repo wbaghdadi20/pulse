@@ -45,7 +45,6 @@ services:
       retries: 10
 
   catcher:
-    # Pulse's own alert inbox: the webhook receiver alerts are sent to (Part B/D).
     build: ./catcher
     environment:
       PULSE_WEBHOOK_SECRET: ${PULSE_WEBHOOK_SECRET:?set PULSE_WEBHOOK_SECRET in .env}

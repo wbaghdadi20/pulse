@@ -22,7 +22,7 @@ SECRET = os.environ["PULSE_WEBHOOK_SECRET"].encode()
 SIGNATURE_HEADER = "X-Pulse-Signature"
 
 app = FastAPI(title="catcher")
-received: list[dict[str, Any]] = []  # newest first; memory is fine for an inbox
+received: list[dict[str, Any]] = []
 
 
 def signature_of(body: bytes) -> str:
