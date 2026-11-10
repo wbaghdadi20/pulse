@@ -79,9 +79,9 @@ def send_alert(self: Task[Any, Any], alert_id: int) -> None:
                 "alert %d failed after %d attempts: %r", alert_id, alert.attempts, exc
             )
             return
-        countdown = 2**alert.attempts  # 2, 4, 8, 16 s
+        countdown = alerting.retry_delay(alert.attempts)
         log.warning(
-            "alert %d attempt %d failed (%r); retrying in %d s",
+            "alert %d attempt %d failed (%r); retrying in %.1f s",
             alert_id,
             alert.attempts,
             exc,

@@ -167,9 +167,9 @@ class Retried(Exception):
 
 
 @pytest.fixture
-def retries(monkeypatch) -> list[int]:
+def retries(monkeypatch) -> list[float]:
     """The countdowns send_alert.retry was asked for."""
-    countdowns: list[int] = []
+    countdowns: list[float] = []
 
     def fake_retry(**kwargs):
         countdowns.append(kwargs["countdown"])
@@ -188,7 +188,8 @@ def test_a_failing_receiver_is_retried_with_exponential_backoff(
         with pytest.raises(Retried):
             tasks.send_alert(alert.pk)
 
-    assert retries == [2, 4, 8, 16]
+    for attempt, countdown in enumerate(retries, start=1):
+        assert 2**attempt <= countdown <= 2 ** (attempt + 1)
     alert.refresh_from_db()
     assert alert.status == Alert.Status.PENDING
     assert alert.attempts == 4
@@ -244,4 +245,4 @@ def test_an_unreachable_receiver_counts_as_a_failed_attempt(
     with pytest.raises(Retried):
         tasks.send_alert(alert.pk)
 
-    assert retries == [2]
+    assert len(retries) == 1
