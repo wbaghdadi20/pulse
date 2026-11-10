@@ -353,10 +353,10 @@ queued with `transaction.on_commit`, so a worker can never pick up a message for
 row that isn't visible yet.
 
 **Retries.** The receiver being unreachable, timing out or answering non-2xx is a
-task failure: `send_alert` retries with exponential backoff (2, 4, 8, 16 s), five
-attempts in all, counting each attempt in `alerts.attempts` before the request so a
-crash mid-request still counts. After the fifth failure the row is marked `failed`;
-nothing stays `pending` forever. A *monitored target* being down is never a task
+task failure: `send_alert` retries with exponential backoff, `PULSE_ALERT_MAX_ATTEMPTS`
+attempts in all (default 5), counting each attempt in `alerts.attempts` before the
+request so a crash mid-request still counts. After the last failure the row is
+marked `failed`; nothing stays `pending` forever. A *monitored target* being down is never a task
 failure: `run_check` records the result and finishes normally, so it is never
 retried and uptime numbers stay honest.
 
@@ -519,6 +519,7 @@ All settings come from environment variables in `.env` (never committed).
 | `CELERY_BROKER_URL`    | The queue. `redis://redis:6379/0` inside Docker. Required.            |
 | `PULSE_WEBHOOK_URL`    | Where alerts are POSTed. Defaults to `http://catcher:8000/webhook`.   |
 | `PULSE_WEBHOOK_SECRET` | Shared with the catcher; alerts are HMAC-signed with it. Required.    |
+| `PULSE_ALERT_MAX_ATTEMPTS` | Delivery attempts per alert before it is marked failed. 1–10, default `5`. |
 
 Parsing is done by the typed readers in `config/env.py` (`env_str`, `env_bool`,
 `env_int`, `env_list`): a blank value counts as unset, a boolean accepts only

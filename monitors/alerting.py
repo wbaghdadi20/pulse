@@ -21,7 +21,6 @@ from core.db import violated_constraint
 
 from .models import Alert, Incident
 
-MAX_ATTEMPTS = 5
 SIGNATURE_HEADER = "X-Pulse-Signature"
 
 

@@ -161,6 +161,7 @@ CELERY_TIMEZONE = TIME_ZONE
 # Alerts: where incident webhooks go and the secret they are signed with.
 PULSE_WEBHOOK_URL = env_str("PULSE_WEBHOOK_URL", default="http://catcher:8000/webhook")
 PULSE_WEBHOOK_SECRET = env_str("PULSE_WEBHOOK_SECRET")
+PULSE_ALERT_MAX_ATTEMPTS = env_int("PULSE_ALERT_MAX_ATTEMPTS", default=5)
 
 CELERY_BEAT_SCHEDULE = {
     # Every 10 s beat queues this; it queues one run_check per due monitor.
