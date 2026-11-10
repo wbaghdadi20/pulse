@@ -41,7 +41,6 @@ def enqueue_due_checks() -> int:
 
 @shared_task
 def run_check(monitor_id: int) -> None:
-    """The scheduled "check now": same service, no HTTP request in between."""
     try:
         monitor = Monitor.objects.get(pk=monitor_id)
     except Monitor.DoesNotExist:

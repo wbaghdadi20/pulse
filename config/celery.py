@@ -1,7 +1,7 @@
-"""The Celery app. Worker and beat processes start from here: celery -A config ...
+"""The Celery app: `celery -A config worker|beat` starts from here.
 
-Settings come from Django's, prefixed CELERY_ (CELERY_BROKER_URL -> broker_url).
-Tasks are found in each installed app's tasks.py.
+Django settings prefixed CELERY_ become Celery settings (CELERY_BROKER_URL ->
+broker_url); tasks are discovered in each installed app's tasks.py.
 """
 
 import os
