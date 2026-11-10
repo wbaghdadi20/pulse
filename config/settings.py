@@ -148,3 +148,13 @@ REST_FRAMEWORK = {
 # Flap protection: how many checks in a row before an incident opens / resolves.
 PULSE_FAIL_THRESHOLD = env_int("PULSE_FAIL_THRESHOLD", default=3)
 PULSE_OK_THRESHOLD = env_int("PULSE_OK_THRESHOLD", default=2)
+
+
+# Celery
+# https://docs.celeryq.dev/en/stable/userguide/configuration.html
+# The broker is the queue (a Redis list). No result backend: every task is
+# fire-and-forget and records its outcome in Postgres itself.
+CELERY_BROKER_URL = env_str("CELERY_BROKER_URL")
+CELERY_TASK_IGNORE_RESULT = True
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_TIMEZONE = TIME_ZONE

@@ -12,6 +12,7 @@ for _name in (
     "POSTGRES_USER",
     "POSTGRES_PASSWORD",
     "POSTGRES_HOST",
+    "CELERY_BROKER_URL",
 ):
     os.environ.setdefault(_name, "typecheck")
 
