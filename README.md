@@ -614,6 +614,15 @@ mutants, 0 survivors**, so the scope is the whole `monitors/` and `core/` source
 | baseline                              | 392     | 63       | 84%    |
 | after 7 new tests                     | 392     | 45       | 89%    |
 | after the JSON-assertion feature too  | 436     | 54       | 88%    |
+| D6: Celery tasks and alerts added     | 547     | 76       | 86%    |
+| D6: after pinning the alert payload   | 547     | 63       | 88%    |
+
+The 13 D6 survivors killed by one test were the alert payload keys and the
+`Content-Type` header: the webhook contract was sent but never asserted. The 8 that
+remain in `alerting.deliver` are equivalent mutants (`sort_keys`, the JSON separators,
+`refresh_from_db` field list): they change bytes that are signed and verified
+consistently either way, so no behaviour a test could observe. `send_alert` itself has
+no survivors.
 
 The 18 killed survivors were real gaps, each now a test: the uptime and incident
 queries were never checked to filter by monitor (`test_uptime_counts_only_this_monitors_checks`,
