@@ -13,6 +13,7 @@ for _name in (
     "POSTGRES_PASSWORD",
     "POSTGRES_HOST",
     "CELERY_BROKER_URL",
+    "PULSE_WEBHOOK_SECRET",
 ):
     os.environ.setdefault(_name, "typecheck")
 

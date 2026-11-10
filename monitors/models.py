@@ -106,3 +106,41 @@ class Incident(models.Model):
     def __str__(self) -> str:
         state = "open" if self.resolved_at is None else "resolved"
         return f"Incident {self.pk} on {self.monitor_id} ({self.kind}, {state})"
+
+
+class Alert(models.Model):
+    """One webhook per incident event. The unique constraint makes "send the opened
+    alert" idempotent at the database: a second attempt to create it is a no-op."""
+
+    class Kind(models.TextChoices):
+        OPENED = "opened"
+        RESOLVED = "resolved"
+
+    class Status(models.TextChoices):
+        PENDING = "pending"
+        SENT = "sent"
+        FAILED = "failed"
+
+    incident = models.ForeignKey(
+        Incident, on_delete=models.CASCADE, related_name="alerts"
+    )
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.PENDING
+    )
+    attempts = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(default=timezone.now)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "alerts"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["incident", "kind"], name="uq_alert_incident_kind"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"Alert {self.pk}: incident {self.incident_id} {self.kind} ({self.status})"
+        )
