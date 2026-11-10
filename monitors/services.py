@@ -16,10 +16,10 @@ from django.utils import timezone
 
 from core.db import PercentileCont, violated_constraint
 
-from . import incidents
+from . import alerting, incidents
 from .checks import run_check
 from .errors import IncidentAlreadyOpen, MonitorNameTaken, MonitorNotFound
-from .models import Check, Incident, Monitor
+from .models import Alert, Check, Incident, Monitor
 
 
 def list_monitors() -> QuerySet[Monitor]:
@@ -132,7 +132,9 @@ def open_incident_for(
     """
     try:
         with transaction.atomic():
-            return Incident.objects.create(monitor=monitor, kind=kind, cause=cause)
+            incident = Incident.objects.create(monitor=monitor, kind=kind, cause=cause)
+            alerting.queue_alert(incident, Alert.Kind.OPENED)
+            return incident
     except IntegrityError as exc:
         if violated_constraint(exc) == "uq_one_open_incident_per_kind":
             raise IncidentAlreadyOpen(monitor.pk, kind) from exc
@@ -140,8 +142,10 @@ def open_incident_for(
 
 
 def resolve_incident(incident: Incident, now: datetime | None = None) -> Incident:
-    incident.resolved_at = now or timezone.now()
-    incident.save(update_fields=["resolved_at"])
+    with transaction.atomic():
+        incident.resolved_at = now or timezone.now()
+        incident.save(update_fields=["resolved_at"])
+        alerting.queue_alert(incident, Alert.Kind.RESOLVED)
     return incident
 
 
