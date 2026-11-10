@@ -44,6 +44,14 @@ services:
       timeout: 3s
       retries: 10
 
+  catcher:
+    # Pulse's own alert inbox: the webhook receiver alerts are sent to (Part B/D).
+    build: ./catcher
+    environment:
+      PULSE_WEBHOOK_SECRET: ${PULSE_WEBHOOK_SECRET:?set PULSE_WEBHOOK_SECRET in .env}
+    ports:
+      - "8300:8000"
+
   flaky:
     # A tiny target Pulse can monitor; switch it with POST /mode (see flaky/main.py).
     build: ./flaky
