@@ -69,8 +69,12 @@ Built with Django, PostgreSQL and Docker Compose.
 | `api`      | Django app            | http://localhost:8100                      |
 | `postgres` | PostgreSQL 16         | `localhost:5433` (bound to 127.0.0.1 only) |
 | `flaky`    | test target (FastAPI) | http://localhost:8200                      |
+| `redis`    | Celery's queue        | not published                              |
+| `worker`   | Celery worker: runs the scheduled checks and sends alerts | no port |
+| `beat`     | Celery beat: the clock that queues due checks every 10 s  | no port |
+| `catcher`  | alert inbox (FastAPI) | http://localhost:8400                      |
 
-Host ports 8100 / 8200 / 5433 are used instead of 8000 / 5432 so Pulse can run
+Host ports 8100 / 8200 / 8400 / 5433 are used instead of 8000 / 5432 so Pulse can run
 alongside other local stacks. The `shop` target is a separate Compose project
 (`shop/compose.yaml`) on http://localhost:8300.
 
@@ -81,6 +85,7 @@ alongside other local stacks. The `shop` target is a separate Compose project
 | `docker compose up --build -d --wait`                | Build and start everything in the background     |
 | `docker compose ps`                                  | Show running services and their health           |
 | `docker compose logs -f api`                         | Follow the app's logs (Ctrl+C stops following)   |
+| `docker compose logs -f worker`                      | Follow the checks and alerts as they run         |
 | `docker compose exec api python manage.py <command>` | Run a Django management command                  |
 | `docker compose down`                                | Stop everything (database data is kept)          |
 | `docker compose down -v`                             | Stop everything **and delete the database data** |
@@ -304,6 +309,102 @@ answers B's `COMMIT` with `ROLLBACK`, because the transaction had already failed
 B's insert waits until A commits, then fails. Through the API, 20 concurrent
 `POST /monitors/5/incidents/` requests returned one 201 and nineteen 409s, and no 500s.
 
+## Scheduled checks and alerts
+
+Until D5 Pulse only checked when someone called "check now". Now it checks on its
+own, with Celery:
+
+```
+beat ──every 10 s──▶ redis ──▶ worker: enqueue_due_checks()
+                                  │  SELECT id FROM monitors
+                                  │  WHERE last_checked_at IS NULL
+                                  │     OR last_checked_at + interval_s * '1 s' <= now()
+                                  └─▶ redis ──▶ worker: run_check(monitor_id)  (one message per due monitor)
+                                                   └─▶ services.check_monitor(): the same code as "check now"
+                                                         saves the check, stamps last_checked_at,
+                                                         opens / resolves incidents
+```
+
+- **beat** is the clock. It never runs tasks; it puts one message on the queue
+  every 10 seconds. Run exactly one: two beats queue everything twice.
+- **worker** processes run the tasks. Arguments cross Redis as JSON, so tasks take
+  ids and load the row fresh. A monitor deleted between tick and pop is logged and
+  skipped, not an error.
+- `monitors/tasks.py` holds the tasks; they are thin wrappers around
+  `monitors/services.py`, so the API and the scheduler share one code path.
+- A monitor's interval is a lower bound: beat looks every 10 s, so a 10 s monitor is
+  checked every 10 or 20 s depending on where the tick lands.
+
+### Alerts
+
+When an incident opens or resolves, Pulse POSTs a signed JSON webhook to the
+catcher. The design is built around one fact: **a task can run twice** (a retry
+after a timeout where the first attempt did get through, or the same event queued
+twice). Two layers make that harmless:
+
+1. **One row per event.** `alerts` has a unique constraint on `(incident_id, kind)`
+   with kind `opened` or `resolved`. Recording the event twice is a no-op at the
+   database, so an incident can never produce two "opened" alerts.
+2. **The task checks before sending.** `send_alert(alert_id)` loads the row and
+   stops if its status is no longer `pending`. Running it twice sends once.
+
+The row is inserted in the same transaction as the incident change, and the task is
+queued with `transaction.on_commit`, so a worker can never pick up a message for a
+row that isn't visible yet.
+
+**Retries.** The receiver being unreachable, timing out or answering non-2xx is a
+task failure: `send_alert` retries with exponential backoff (2, 4, 8, 16 s), five
+attempts in all, counting each attempt in `alerts.attempts` before the request so a
+crash mid-request still counts. After the fifth failure the row is marked `failed`;
+nothing stays `pending` forever. A *monitored target* being down is never a task
+failure: `run_check` records the result and finishes normally, so it is never
+retried and uptime numbers stay honest.
+
+**Signing.** The payload is serialised once (`json.dumps` with sorted keys and
+compact separators), signed with HMAC-SHA256 over the shared `PULSE_WEBHOOK_SECRET`,
+and those exact bytes are sent with the hex digest in `X-Pulse-Signature`. The
+catcher recomputes the digest over the raw body it received and compares with
+`hmac.compare_digest`, which takes the same time whichever byte differs, so the
+signature can't be guessed one character at a time. A wrong or missing signature
+is a 401 and nothing is stored.
+
+Payload, for example:
+
+```json
+{"event": "incident.resolved", "monitor": "flaky", "monitor_id": 15, "incident_id": 37,
+ "incident_kind": "availability", "cause": "3 failed checks in a row",
+ "opened_at": "2026-11-10T03:18:42Z", "resolved_at": "2026-11-10T03:19:22Z", "downtime_seconds": 39}
+```
+
+### catcher: the alert inbox
+
+`catcher/` is a tiny FastAPI app standing in for Slack or PagerDuty. `POST /webhook`
+verifies the signature and stores the alert; `GET /` (http://localhost:8400/) lists
+everything received, newest first. Memory only: restarting it empties the inbox.
+
+### Watch it work
+
+```bash
+docker compose logs -f worker                                   # one terminal
+curl -X POST localhost:8200/mode -H 'Content-Type: application/json' -d '{"mode": "500"}'
+# ~1 min later: three failed checks, an incident opens, "alert N sent: opened" in the log
+curl -s localhost:8400/ | python -m json.tool | head -30       # the signed alert
+curl -X POST localhost:8200/mode -H 'Content-Type: application/json' -d '{"mode": "ok"}'
+# ~40 s later: two passing checks, the incident resolves, a second alert with downtime_seconds
+docker compose stop catcher                                     # now break the receiver
+curl -X POST localhost:8200/mode -H 'Content-Type: application/json' -d '{"mode": "500"}'
+# the worker log shows five attempts 2, 4, 8, 16 s apart, then "failed after 5 attempts"
+docker compose start catcher
+```
+
+Useful when something doesn't move:
+
+```bash
+docker compose exec worker celery -A config inspect ping        # is a worker listening on the queue?
+docker compose exec worker celery -A config inspect registered  # which tasks it knows (unregistered task = module not imported)
+docker compose exec redis redis-cli llen celery                 # messages waiting in the default queue
+```
+
 ## flaky: a target you control
 
 `flaky` is a tiny FastAPI app in `flaky/` that Pulse can monitor at
@@ -415,6 +516,14 @@ All settings come from environment variables in `.env` (never committed).
 | `POSTGRES_PORT`        | Database port inside the Docker network. Defaults to `5432`.          |
 | `PULSE_FAIL_THRESHOLD` | Failed checks in a row before an incident opens. 1–10, default `3`.   |
 | `PULSE_OK_THRESHOLD`   | Successful checks in a row before it resolves. 1–10, default `2`.     |
+| `CELERY_BROKER_URL`    | The queue. `redis://redis:6379/0` inside Docker. Required.            |
+| `PULSE_WEBHOOK_URL`    | Where alerts are POSTed. Defaults to `http://catcher:8000/webhook`.   |
+| `PULSE_WEBHOOK_SECRET` | Shared with the catcher; alerts are HMAC-signed with it. Required.    |
+
+Parsing is done by the typed readers in `config/env.py` (`env_str`, `env_bool`,
+`env_int`, `env_list`): a blank value counts as unset, a boolean accepts only
+`true`/`false`/`1`/`0`, and a value that can't be parsed fails at startup with the
+variable's name. `tests/config/` covers them with Hypothesis.
 
 ## Troubleshooting
 
@@ -454,6 +563,7 @@ docker compose exec api pytest tests/monitors/test_incidents.py -v  # one file
 docker compose exec api pytest -m "not django_db"  # only the pure tests, no database (~0.05 s)
 docker compose exec api pytest tests/monitors/test_incidents_properties.py --hypothesis-show-statistics  # how often each branch ran
 docker compose exec api env HYPOTHESIS_PROFILE=ci pytest   # 2000 examples per property instead of 500
+docker compose run --rm catcher pytest -q  # the catcher's own tests (signature verification)
 ```
 
 Tests live in a root-level `tests/` package, one sub-package per Django app
