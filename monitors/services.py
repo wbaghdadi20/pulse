@@ -6,6 +6,7 @@ every other function takes the monitor itself.
 """
 
 from datetime import datetime, timedelta
+from typing import Any
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
@@ -33,13 +34,13 @@ def get_monitor(pk: int) -> Monitor:
         raise MonitorNotFound(pk) from None
 
 
-def create_monitor(data: dict) -> Monitor:
+def create_monitor(data: dict[str, Any]) -> Monitor:
     monitor = Monitor(**data)
     _save(monitor)
     return monitor
 
 
-def update_monitor(monitor: Monitor, changes: dict) -> Monitor:
+def update_monitor(monitor: Monitor, changes: dict[str, Any]) -> Monitor:
     for field, value in changes.items():
         setattr(monitor, field, value)
     _save(monitor, update_fields=list(changes))
@@ -50,7 +51,7 @@ def delete_monitor(monitor: Monitor) -> None:
     monitor.delete()  # its checks and incidents go too (on_delete=CASCADE)
 
 
-def check_monitor(monitor: Monitor) -> dict:
+def check_monitor(monitor: Monitor) -> dict[str, Any]:
     """Check once, record the result, then let the state machine react to it."""
     result = run_check(monitor)
     Check.objects.create(monitor=monitor, **result)
@@ -91,11 +92,14 @@ def evaluate_incidents(monitor: Monitor) -> incidents.Action:
             monitor, cause=f"{fail_threshold} failed checks in a row", kind=kind
         )
     elif action is incidents.Action.RESOLVE:
+        assert current is not None, "decide() only resolves when incident_open=True"
         resolve_incident(current)
     return action
 
 
-def get_uptime(monitor: Monitor, days: int, now: datetime | None = None) -> dict:
+def get_uptime(
+    monitor: Monitor, days: int, now: datetime | None = None
+) -> dict[str, Any]:
     """Uptime and p95 latency over the last `days` days, computed by Postgres.
 
     One aggregate query: no check rows are loaded into Python.
@@ -140,7 +144,7 @@ def resolve_incident(incident: Incident, now: datetime | None = None) -> Inciden
     return incident
 
 
-def _save(monitor: Monitor, **save_kwargs) -> None:
+def _save(monitor: Monitor, **save_kwargs: Any) -> None:
     """Save, turning a duplicate name into MonitorNameTaken.
 
     There is no "is the name free?" query first: two requests could both see "free".

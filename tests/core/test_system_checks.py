@@ -5,7 +5,7 @@ from django.core.checks import run_checks
 
 
 def pulse_errors():
-    return [e for e in run_checks() if e.id.startswith("pulse.")]
+    return [e for e in run_checks() if e.id and e.id.startswith("pulse.")]
 
 
 def test_defaults_pass():

@@ -13,3 +13,13 @@ repos:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
+  - repo: local
+    hooks:
+      # Local rather than mirrors-mypy: the Django plugin imports the settings and
+      # models, so it needs the project's own environment, not an isolated one.
+      - id: mypy
+        name: mypy
+        entry: mypy
+        language: system
+        types: [python]
+        pass_filenames: false
