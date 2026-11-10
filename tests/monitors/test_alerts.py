@@ -198,14 +198,35 @@ def test_the_last_failed_attempt_marks_the_alert_failed_not_pending(
     alert, webhook, retries
 ):
     webhook.status = 503
-    Alert.objects.filter(pk=alert.pk).update(attempts=alerting.MAX_ATTEMPTS - 1)
+    Alert.objects.filter(pk=alert.pk).update(
+        attempts=settings.PULSE_ALERT_MAX_ATTEMPTS - 1
+    )
 
     tasks.send_alert(alert.pk)  # fifth and last attempt: no retry raised
 
     assert retries == []
     alert.refresh_from_db()
     assert alert.status == Alert.Status.FAILED
-    assert alert.attempts == alerting.MAX_ATTEMPTS
+    assert alert.attempts == settings.PULSE_ALERT_MAX_ATTEMPTS
+
+
+@pytest.mark.parametrize("limit", [1, 2, 10])
+def test_the_configured_limit_is_the_number_of_attempts(
+    settings, alert, webhook, retries, limit
+):
+    settings.PULSE_ALERT_MAX_ATTEMPTS = limit
+    webhook.status = 503
+
+    for _ in range(limit - 1):
+        with pytest.raises(Retried):
+            tasks.send_alert(alert.pk)
+    tasks.send_alert(alert.pk)
+
+    alert.refresh_from_db()
+    assert alert.status == Alert.Status.FAILED
+    assert alert.attempts == limit
+    assert len(webhook.requests) == limit
+    assert len(retries) == limit - 1
 
 
 def test_an_unreachable_receiver_counts_as_a_failed_attempt(
