@@ -74,8 +74,11 @@ def evaluate_incidents(monitor: Monitor) -> incidents.Action:
     ]
     results = [check.ok for check in reversed(latest)]  # oldest first
 
-    # At most one exists: enforced by the partial unique index uq_one_open_incident.
-    current = Incident.objects.filter(monitor=monitor, resolved_at__isnull=True).first()
+    kind = Incident.Kind.AVAILABILITY
+    # At most one exists: enforced by the partial unique index uq_one_open_incident_per_kind.
+    current = Incident.objects.filter(
+        monitor=monitor, kind=kind, resolved_at__isnull=True
+    ).first()
 
     action = incidents.decide(
         results,
@@ -84,7 +87,9 @@ def evaluate_incidents(monitor: Monitor) -> incidents.Action:
         ok_threshold=ok_threshold,
     )
     if action is incidents.Action.OPEN:
-        open_incident_for(monitor, cause=f"{fail_threshold} failed checks in a row")
+        open_incident_for(
+            monitor, cause=f"{fail_threshold} failed checks in a row", kind=kind
+        )
     elif action is incidents.Action.RESOLVE:
         resolve_incident(current)
     return action
@@ -112,18 +117,20 @@ def get_uptime(monitor: Monitor, days: int, now: datetime | None = None) -> dict
     }
 
 
-def open_incident_for(monitor: Monitor, cause: str = "") -> Incident:
-    """Open an incident, unless one is already open for this monitor.
+def open_incident_for(
+    monitor: Monitor, cause: str = "", kind: str = Incident.Kind.AVAILABILITY
+) -> Incident:
+    """Open an incident, unless one of this kind is already open for this monitor.
 
     Like the name check, there is no "is one open?" query first: the partial unique
-    index uq_one_open_incident decides, so two concurrent calls can't both succeed.
+    index uq_one_open_incident_per_kind decides, so two concurrent calls can't both succeed.
     """
     try:
         with transaction.atomic():
-            return Incident.objects.create(monitor=monitor, cause=cause)
+            return Incident.objects.create(monitor=monitor, kind=kind, cause=cause)
     except IntegrityError as exc:
-        if violated_constraint(exc) == "uq_one_open_incident":
-            raise IncidentAlreadyOpen(monitor.pk) from exc
+        if violated_constraint(exc) == "uq_one_open_incident_per_kind":
+            raise IncidentAlreadyOpen(monitor.pk, kind) from exc
         raise
 
 

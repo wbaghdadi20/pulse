@@ -274,7 +274,7 @@ def test_second_open_incident_is_409_never_500(api, monitor):
 
     assert response.status_code == 409
     assert response.json() == {
-        "detail": f"Monitor {monitor.pk} already has an open incident."
+        "detail": f"Monitor {monitor.pk} already has an open availability incident."
     }
     assert (
         Incident.objects.filter(monitor=monitor, resolved_at__isnull=True).count() == 1

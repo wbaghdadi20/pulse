@@ -14,6 +14,7 @@ class MonitorNameTaken(ConflictError):
 
 
 class IncidentAlreadyOpen(ConflictError):
-    def __init__(self, monitor_id: int) -> None:
-        super().__init__(f"Monitor {monitor_id} already has an open incident.")
+    def __init__(self, monitor_id: int, kind: str) -> None:
+        super().__init__(f"Monitor {monitor_id} already has an open {kind} incident.")
         self.monitor_id = monitor_id
+        self.kind = kind
