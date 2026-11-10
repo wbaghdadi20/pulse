@@ -1,9 +1,7 @@
 """Alerts: one signed webhook per incident event, delivered at least once, recorded once.
 
-queue_alert() is the write half: insert the alerts row (the unique constraint makes a
-second call for the same event a no-op) and queue send_alert once the surrounding
-transaction commits. deliver() is the I/O half the task calls: POST the signed
-payload and mark the row sent. Retrying is the task's job, not this module's.
+queue_alert() records the event and queues delivery; deliver() does one attempt.
+Retrying is the task's job, so the policy lives next to the thing that applies it.
 """
 
 import hashlib
