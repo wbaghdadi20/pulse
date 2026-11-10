@@ -158,3 +158,10 @@ CELERY_BROKER_URL = env_str("CELERY_BROKER_URL")
 CELERY_TASK_IGNORE_RESULT = True
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_TIMEZONE = TIME_ZONE
+CELERY_BEAT_SCHEDULE = {
+    # Every 10 s beat queues this; it queues one run_check per due monitor.
+    "enqueue-due-checks": {
+        "task": "monitors.tasks.enqueue_due_checks",
+        "schedule": 10.0,
+    },
+}
