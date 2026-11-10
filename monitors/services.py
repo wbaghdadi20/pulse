@@ -54,7 +54,8 @@ def delete_monitor(monitor: Monitor) -> None:
 def check_monitor(monitor: Monitor) -> dict[str, Any]:
     """Check once, record the result, then let the state machine react to it."""
     result = run_check(monitor)
-    Check.objects.create(monitor=monitor, **result)
+    check = Check.objects.create(monitor=monitor, **result)
+    Monitor.objects.filter(pk=monitor.pk).update(last_checked_at=check.checked_at)
     evaluate_incidents(monitor)
     return result
 

@@ -26,6 +26,7 @@ class Monitor(models.Model):
     # deep health check can be "up" while components we don't care about fail.
     assertions = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    last_checked_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "monitors"
