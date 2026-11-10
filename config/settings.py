@@ -10,8 +10,9 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
-import os
 from pathlib import Path
+
+from config.env import env_bool, env_int, env_list, env_str
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -21,16 +22,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]
+SECRET_KEY = env_str("DJANGO_SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get("DJANGO_DEBUG", "false").lower() == "true"
+DEBUG = env_bool("DJANGO_DEBUG", default=False)
 
-ALLOWED_HOSTS = [
-    host.strip()
-    for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",")
-    if host.strip()
-]
+ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", default=[])
 
 
 # Application definition
@@ -83,11 +80,11 @@ WSGI_APPLICATION = "config.wsgi.application"
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.environ["POSTGRES_DB"],
-        "USER": os.environ["POSTGRES_USER"],
-        "PASSWORD": os.environ["POSTGRES_PASSWORD"],
-        "HOST": os.environ["POSTGRES_HOST"],
-        "PORT": os.environ.get("POSTGRES_PORT", "5432"),
+        "NAME": env_str("POSTGRES_DB"),
+        "USER": env_str("POSTGRES_USER"),
+        "PASSWORD": env_str("POSTGRES_PASSWORD"),
+        "HOST": env_str("POSTGRES_HOST"),
+        "PORT": env_str("POSTGRES_PORT", default="5432"),
     }
 }
 
@@ -149,5 +146,5 @@ REST_FRAMEWORK = {
 
 # Pulse
 # Flap protection: how many checks in a row before an incident opens / resolves.
-PULSE_FAIL_THRESHOLD = int(os.environ.get("PULSE_FAIL_THRESHOLD", "3"))
-PULSE_OK_THRESHOLD = int(os.environ.get("PULSE_OK_THRESHOLD", "2"))
+PULSE_FAIL_THRESHOLD = env_int("PULSE_FAIL_THRESHOLD", default=3)
+PULSE_OK_THRESHOLD = env_int("PULSE_OK_THRESHOLD", default=2)
