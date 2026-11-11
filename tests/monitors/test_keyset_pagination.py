@@ -60,7 +60,7 @@ def test_a_page_past_the_end_is_empty_not_an_error(api, monitors):
 
 
 def test_there_is_no_count_and_no_count_query(api, monitors, django_assert_num_queries):
-    with django_assert_num_queries(1):
+    with django_assert_num_queries(1 + 2):  # the page, then latest_check per row
         body = api.get("/monitors/?after=0&limit=2").json()
 
     assert set(body) == {"next", "results"}

@@ -4,11 +4,19 @@ from typing import Any
 from django.utils import timezone
 from rest_framework import serializers
 
-from .models import Incident, Monitor
+from .models import Check, Incident, Monitor
+
+
+class LatestCheckSerializer(serializers.ModelSerializer[Check]):
+    class Meta:
+        model = Check
+        fields = ["checked_at", "ok", "status_code", "latency_ms", "error_type"]
 
 
 class MonitorSerializer(serializers.ModelSerializer[Monitor]):
     """Fields, limits and the URL validator all come from the Monitor model."""
+
+    latest_check = serializers.SerializerMethodField()
 
     class Meta:
         model = Monitor
@@ -25,6 +33,7 @@ class MonitorSerializer(serializers.ModelSerializer[Monitor]):
             "last_checked_at",
             "next_check_at",
             "maintenance_until",
+            "latest_check",
         ]
         read_only_fields = ["id", "created_at", "last_checked_at", "next_check_at"]
         # ModelSerializer adds a UniqueValidator to `name` (from the model's
@@ -32,6 +41,10 @@ class MonitorSerializer(serializers.ModelSerializer[Monitor]):
         # races. Uniqueness is left to the database instead; the service turns a
         # violation into 409. max_length is kept: DRF adds it separately.
         extra_kwargs: dict[str, dict[str, Any]] = {"name": {"validators": []}}
+
+    def get_latest_check(self, monitor: Monitor) -> dict[str, Any] | None:
+        check = monitor.checks.order_by("-checked_at", "-id").first()
+        return None if check is None else LatestCheckSerializer(check).data
 
     def validate_maintenance_until(self, value: datetime | None) -> datetime | None:
         if value is not None and value <= timezone.now():
