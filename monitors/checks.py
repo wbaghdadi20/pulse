@@ -4,6 +4,7 @@ from typing import Any
 
 import httpx
 
+from . import clients
 from .models import Monitor
 
 
@@ -13,16 +14,14 @@ def run_check(monitor: Monitor, client: httpx.Client | None = None) -> dict[str,
     A failing target is a normal result for a monitor, so this never raises:
     every outcome comes back as a dict.
 
-    `client` is injectable so tests can plug in httpx.MockTransport instead of
-    the network. Production passes nothing and gets a real client.
+    `client` defaults to this process's probe client (see clients.py). Tests pass
+    one built on httpx.MockTransport instead of the network.
     """
+    if client is None:
+        client = clients.probe_client()
     started = time.perf_counter()
     try:
-        if client is None:
-            with httpx.Client() as client:
-                response = _send(client, monitor)
-        else:
-            response = _send(client, monitor)
+        response = _send(client, monitor)
     except httpx.HTTPError as exc:
         return {
             "ok": False,
