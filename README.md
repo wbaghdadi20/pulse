@@ -103,7 +103,7 @@ browsable API.
 | `GET /health`                               | liveness check                                    | 200     |               |
 | `GET /status`                               | public status page: state, 90-day uptime, p95, latest incidents | 200 |         |
 | `POST /monitors/`                           | create a monitor                                  | 201     | 400, 409      |
-| `GET /monitors/?limit&offset`               | list monitors (paginated)                         | 200     |               |
+| `GET /monitors/?limit&offset` or `?after`   | list monitors (paginated)                         | 200     | 400           |
 | `GET /monitors/<id>/`                       | get one monitor                                   | 200     | 404           |
 | `PATCH /monitors/<id>/`                     | change some fields (incl. `maintenance_until`)    | 200     | 400, 404, 409 |
 | `DELETE /monitors/<id>/`                    | delete a monitor                                  | 204     | 404           |
@@ -126,6 +126,14 @@ Conventions:
   the slash fails, because Django can't redirect a `POST` and keep its body.
 - **Pagination** uses `?limit=` (default 20, max 100) and `?offset=`. The response is
   `{"count": <total>, "next": <url>, "previous": <url>, "results": [...]}`.
+- **Keyset pagination** is the alternative: `?after=<last id seen>` (`0` to start)
+  returns `{"next": <url>, "results": [...]}`, ordered by id. Follow `next` until
+  it is `null`. It is the better choice when the list is long or changing:
+  `OFFSET 499000` on a 500,000-row table reads 499,020 rows (68 ms) where
+  `WHERE id > 499000` reads 20 (0.07 ms), there is no `COUNT(*)`, and a row
+  deleted between two requests cannot make the next page skip one. Offset is the
+  better choice when a client needs the total or wants to jump to a page.
+  [ADR 0011](docs/adr/0011-keyset-pagination.md).
 - **"Check now" always returns 200.** A target that is down is a result, not an
   error in Pulse. `error_type` is one of `timeout`, `connection_refused`, `dns`,
   `wrong_status`, `assertion_failed`, or `error` (anything else, e.g. a TLS failure).

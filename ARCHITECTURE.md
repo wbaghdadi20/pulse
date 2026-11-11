@@ -469,6 +469,7 @@ stateDiagram-v2
 | [0008](docs/adr/0008-one-check-per-interval.md) | One check per interval: claim in Postgres, lock in Redis |
 | [0009](docs/adr/0009-status-page-cache.md) | The status page is cached by key and dropped when an incident changes |
 | [0010](docs/adr/0010-check-deadline.md) | A check has a total deadline, not only a timeout per wait |
+| [0011](docs/adr/0011-keyset-pagination.md) | Keyset pagination next to limit/offset |
 
 ## Known limits
 
