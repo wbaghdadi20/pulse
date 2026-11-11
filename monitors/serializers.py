@@ -23,9 +23,10 @@ class MonitorSerializer(serializers.ModelSerializer[Monitor]):
             "assertions",
             "created_at",
             "last_checked_at",
+            "next_check_at",
             "maintenance_until",
         ]
-        read_only_fields = ["id", "created_at", "last_checked_at"]
+        read_only_fields = ["id", "created_at", "last_checked_at", "next_check_at"]
         # ModelSerializer adds a UniqueValidator to `name` (from the model's
         # UniqueConstraint): a SELECT before the INSERT that answers 400 and still
         # races. Uniqueness is left to the database instead; the service turns a

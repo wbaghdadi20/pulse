@@ -31,6 +31,9 @@ class Monitor(models.Model):
     assertions = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     last_checked_at = models.DateTimeField(null=True, blank=True)
+    # The scheduler's cursor: due when this has passed. Moved one interval ahead
+    # when the monitor is claimed, not when its check finishes.
+    next_check_at = models.DateTimeField(default=timezone.now, db_index=True)
     # While set and in the future: checks run and are saved, but no incident opens
     # or resolves and no alert is sent (a planned deploy is not an outage).
     maintenance_until = models.DateTimeField(null=True, blank=True)
