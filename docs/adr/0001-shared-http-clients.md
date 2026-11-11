@@ -55,6 +55,6 @@ injection point, and tests pass a client built on `httpx.MockTransport`.
   not overhead to remove.
 - `timeout_s` is applied by httpx to each phase (connect, read, write) rather than
   to the whole request, so a target that trickles bytes can outlast it. Unchanged
-  by this decision; bounded by the task time limit introduced with the check lock.
+  by this decision; addressed in [0010](0010-check-deadline.md).
 - `tests/monitors/test_clients.py` pins both behaviours by counting connections
   on a loopback server: 3 checks open 3 connections, 3 webhooks open 1.
