@@ -5,8 +5,11 @@ once per run, and wraps every test marked `django_db` in a transaction that is
 rolled back afterwards, so each test starts from empty tables.
 """
 
+import fcntl
 import os
+import tempfile
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -26,6 +29,8 @@ hypothesis_settings.register_profile("ci", max_examples=2000)
 hypothesis_settings.register_profile("dev", max_examples=500)
 hypothesis_settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "dev"))
 
+
+REDIS_TURN = Path(tempfile.gettempdir()) / "pulse-tests-redis.lock"
 
 MONITOR_PAYLOAD = {
     "name": "backend",
@@ -62,13 +67,19 @@ def redis_db(monkeypatch: pytest.MonkeyPatch, settings) -> Iterator[redis.Redis]
 
     Locks are only as correct as Redis makes them, so they are tested against it.
     Database 15 keeps the tests away from the dev stack's queue (0) and locks (1).
+
+    pytest-xdist workers are separate processes sharing that one database, and
+    their monitors have the same ids, so the same lock keys. They take turns: the
+    file lock is held from before the first flush until after the last.
     """
     url = urlsplit(settings.PULSE_REDIS_URL)._replace(path="/15").geturl()
     client = redis.Redis.from_url(url)
-    client.flushdb()
-    monkeypatch.setattr(clients, "redis_client", lambda: client)
-    yield client
-    client.flushdb()
+    with REDIS_TURN.open("w") as turn:
+        fcntl.flock(turn, fcntl.LOCK_EX)
+        client.flushdb()
+        monkeypatch.setattr(clients, "redis_client", lambda: client)
+        yield client
+        client.flushdb()
     client.close()
 
 

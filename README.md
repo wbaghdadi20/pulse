@@ -772,7 +772,8 @@ Passing -f compose.yaml tells Compose to use only that file, so the override isn
 ### Tests
 
 ```bash
-docker compose exec api pytest            # run everything (~1 s)
+docker compose exec api pytest            # run everything (~8 s)
+docker compose exec api pytest -n auto    # the same on every core, one test database per worker
 docker compose exec api pytest --cov      # with a coverage report
 docker compose exec api pytest --create-db  # after a new migration (tests reuse the DB otherwise)
 docker compose exec api pytest tests/monitors/test_incidents.py -v  # one file
@@ -791,6 +792,14 @@ Tests run inside the `api` container because they need the same environment and
 database host as the app. `pytest-django` creates a separate `test_pulse` database
 and wraps each test in a transaction that is rolled back, so tests never touch
 development data and always start empty.
+
+The suite is safe to run in parallel (`-n auto`, pytest-xdist). Each worker
+process gets its own Postgres database from pytest-django (`test_pulse_gw0`,
+`test_pulse_gw1`, ...) and its own in-process cache. The Redis tests share one
+Redis database, so the `redis_db` fixture holds a file lock for the length of a
+test and the workers take turns. After a new migration, pass `--create-db` once.
+With a suite this small the gain is modest: about 5 s with 8 workers against 8 s
+serially, and no faster with 16, because starting the workers costs what they save.
 
 The kinds of tests, fastest first:
 
