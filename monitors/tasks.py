@@ -17,11 +17,15 @@ from django.utils import timezone
 from core.system_checks import MAX_ALERT_ATTEMPTS
 
 from . import alerting, locks, services
-from .models import Alert, Monitor
+from .models import MAX_TIMEOUT_S, Alert, Monitor
 
 log = get_task_logger(__name__)
 
-CHECK_LOCK_TTL_S = 30
+# httpx applies timeout_s to each phase, so connecting and then waiting for the
+# answer can take it twice over. Celery kills a check at the limit, and the lock
+# outlives the limit, so a lock can never expire under a check that is still running.
+CHECK_TIME_LIMIT_S = 2 * MAX_TIMEOUT_S + 15
+CHECK_LOCK_TTL_S = CHECK_TIME_LIMIT_S + 15
 
 
 @shared_task
@@ -41,17 +45,21 @@ def enqueue_due_checks() -> int:
     return len(ids)
 
 
-@shared_task
+@shared_task(time_limit=CHECK_TIME_LIMIT_S)
 def run_check(monitor_id: int) -> None:
     """Check one monitor, unless another worker is checking it right now."""
     key = f"lock:monitor:{monitor_id}"
-    if not locks.acquire(key, CHECK_LOCK_TTL_S):
+    token = locks.acquire(key, CHECK_LOCK_TTL_S)
+    if token is None:
         log.info("monitor %d is already being checked, skipping", monitor_id)
         return
     try:
         _check(monitor_id)
     finally:
-        locks.release(key)
+        if not locks.release(key, token):
+            log.warning(
+                "monitor %d: the lock expired before the check finished", monitor_id
+            )
 
 
 def _check(monitor_id: int) -> None:

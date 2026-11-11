@@ -7,6 +7,8 @@ from django.utils import timezone
 
 from .validators import validate_http_url
 
+MAX_TIMEOUT_S = 30
+
 
 class Monitor(models.Model):
     class Method(models.TextChoices):
@@ -20,7 +22,7 @@ class Monitor(models.Model):
         default=200, validators=[MinValueValidator(100), MaxValueValidator(599)]
     )
     timeout_s = models.PositiveSmallIntegerField(
-        validators=[MinValueValidator(1), MaxValueValidator(30)]
+        validators=[MinValueValidator(1), MaxValueValidator(MAX_TIMEOUT_S)]
     )
     interval_s = models.PositiveIntegerField(validators=[MinValueValidator(10)])
     # Optional: {"<json key>": "<expected value>", ...}. When set, the check asks for
