@@ -42,6 +42,12 @@ def test_status_cache_seconds_bounds_are_inclusive(settings, value):
     assert pulse_errors() == []
 
 
+@pytest.mark.parametrize("value", [0, 31])
+def test_out_of_range_webhook_timeout_is_reported(settings, value):
+    settings.PULSE_WEBHOOK_TIMEOUT_S = value
+    assert [e.id for e in pulse_errors()] == ["pulse.E004"]
+
+
 def test_every_bad_setting_gets_its_own_error(settings):
     settings.PULSE_FAIL_THRESHOLD = 0
     settings.PULSE_OK_THRESHOLD = 99

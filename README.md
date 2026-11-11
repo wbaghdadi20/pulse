@@ -534,6 +534,7 @@ All settings come from environment variables in `.env` (never committed).
 | `PULSE_WEBHOOK_URL`    | Where alerts are POSTed. Defaults to `http://catcher:8000/webhook`.   |
 | `PULSE_WEBHOOK_SECRET` | Shared with the catcher; alerts are HMAC-signed with it. Required.    |
 | `PULSE_ALERT_MAX_ATTEMPTS` | Delivery attempts per alert before it is marked failed. 1–10, default `5`. |
+| `PULSE_WEBHOOK_TIMEOUT_S` | Seconds one delivery attempt may take. 1–30, default `5`. |
 
 Parsing is done by the typed readers in `config/env.py` (`env_str`, `env_bool`,
 `env_int`, `env_list`): a blank value counts as unset, a boolean accepts only

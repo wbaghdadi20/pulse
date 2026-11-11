@@ -68,7 +68,12 @@ def test_the_webhook_client_reuses_its_connection(server):
     assert server.connections == 1
 
 
-def test_the_webhook_client_has_a_timeout():
-    timeout = clients.webhook_client().timeout
+def test_the_webhook_client_takes_its_timeout_from_settings(settings):
+    settings.PULSE_WEBHOOK_TIMEOUT_S = 9
+    clients.webhook_client.cache_clear()
+    try:
+        timeout = clients.webhook_client().timeout
+    finally:
+        clients.webhook_client.cache_clear()
 
-    assert timeout.connect == timeout.read == clients.WEBHOOK_TIMEOUT_S
+    assert timeout.connect == timeout.read == 9

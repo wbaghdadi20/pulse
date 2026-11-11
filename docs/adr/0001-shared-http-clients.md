@@ -34,7 +34,8 @@ and `django.core.cache.caches` work this way.
 - `probe_client()`: `max_keepalive_connections=0`. Every check opens a new
   connection and so still exercises DNS, TCP and TLS. Prometheus' blackbox
   exporter does the same (`WithKeepAlivesDisabled()` in `prober/http.go`).
-- `webhook_client()`: default pooling, 5 s timeout. One receiver, called
+- `webhook_client()`: default pooling, timeout from `PULSE_WEBHOOK_TIMEOUT_S`
+  (default 5 s, bounded 1 to 30 at startup). One receiver, called
   repeatedly; a burst of alerts during a large outage reuses one connection.
 
 They are built on first use, not at import. gunicorn and Celery fork their
