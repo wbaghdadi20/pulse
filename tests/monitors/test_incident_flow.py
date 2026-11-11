@@ -9,7 +9,7 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
-from monitors import services
+from monitors import incidents, services
 from monitors.incidents import Action
 from monitors.models import Alert, Check, Incident, Monitor
 from tests.conftest import MONITOR_PAYLOAD
@@ -114,6 +114,19 @@ def test_checks_are_read_in_time_order_not_insertion_order(monitor, fake_check):
     )
 
     services.check_monitor(monitor)  # third failure in a row by time
+    assert open_incidents(monitor).count() == 1
+
+
+def test_losing_the_race_to_open_an_incident_is_not_an_error(
+    monitor, fake_check, monkeypatch
+):
+    """Two checks end together, both read "no open incident", the other inserts first."""
+    fake_check(ok=False)
+    for _ in range(3):
+        services.check_monitor(monitor)
+    monkeypatch.setattr(incidents, "decide", lambda *args, **kwargs: Action.OPEN)
+
+    assert services.evaluate_incidents(monitor) is Action.NOTHING
     assert open_incidents(monitor).count() == 1
 
 
