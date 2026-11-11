@@ -283,6 +283,23 @@ covers lookups by monitor alone, so `checks.monitor` has no separate foreign-key
 index (`db_index=False`). Most of the remaining time is fetching the matching rows
 (`Heap Blocks: 2447`), because seeded rows are scattered randomly across the table.
 
+### The latest check, without N+1
+
+Every monitor in the API carries `latest_check` (its newest check, or `null`).
+Asked for in the serializer, that is one extra query per monitor: 7 queries to
+list 5 monitors. The list now gets it from the same statement, through a
+correlated subquery that stops at the first entry of the `(monitor_id,
+checked_at)` index:
+
+| Listing 10 monitors with 50,000 checks each | Queries | Time   |
+| ------------------------------------------- | ------- | ------ |
+| one query per monitor                       | 11      | 10 ms  |
+| one statement with a subquery               | 1       | 2 ms   |
+| `prefetch_related` with a sliced queryset   | 2       | 435 ms |
+
+The third row is why counting queries is not enough: it reads every check to
+keep ten. [ADR 0012](docs/adr/0012-latest-check-without-n-plus-one.md).
+
 ### Rules the database enforces
 
 | Rule                          | Constraint                                                                               | Violation → API |
