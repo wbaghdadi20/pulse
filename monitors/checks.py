@@ -1,6 +1,6 @@
 import socket
 import time
-from typing import Any
+from typing import TypedDict
 
 import httpx
 
@@ -8,11 +8,20 @@ from . import clients
 from .models import Monitor
 
 
-def run_check(monitor: Monitor, client: httpx.Client | None = None) -> dict[str, Any]:
+class CheckResult(TypedDict):
+    """One check's outcome: the columns of a `checks` row, and the "check now" response."""
+
+    ok: bool
+    status_code: int | None
+    latency_ms: int
+    error_type: str | None
+
+
+def probe(monitor: Monitor, client: httpx.Client | None = None) -> CheckResult:
     """Call the monitor's URL once.
 
     A failing target is a normal result for a monitor, so this never raises:
-    every outcome comes back as a dict.
+    every outcome comes back as a CheckResult.
 
     `client` defaults to this process's probe client (see clients.py). Tests pass
     one built on httpx.MockTransport instead of the network.
