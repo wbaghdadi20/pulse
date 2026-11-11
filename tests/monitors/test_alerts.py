@@ -12,7 +12,6 @@ from datetime import timedelta
 
 import httpx
 import pytest
-from django.conf import settings
 
 from monitors import alerting, clients, services, tasks
 from monitors.models import Alert, Incident
@@ -102,7 +101,9 @@ def test_the_alert_is_queued_only_after_commit(incident, queued):
 # --- delivery ---------------------------------------------------------------------
 
 
-def test_send_alert_posts_a_signed_payload_and_marks_the_row_sent(alert, webhook):
+def test_send_alert_posts_a_signed_payload_and_marks_the_row_sent(
+    alert, webhook, settings
+):
     tasks.send_alert(alert.pk)
 
     (request,) = webhook.requests
@@ -196,7 +197,7 @@ def test_a_failing_receiver_is_retried_with_exponential_backoff(
 
 
 def test_the_last_failed_attempt_marks_the_alert_failed_not_pending(
-    alert, webhook, retries
+    alert, webhook, retries, settings
 ):
     webhook.status = 503
     Alert.objects.filter(pk=alert.pk).update(
