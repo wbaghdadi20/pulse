@@ -16,10 +16,12 @@ from django.utils import timezone
 
 from core.system_checks import MAX_ALERT_ATTEMPTS
 
-from . import alerting, services
+from . import alerting, locks, services
 from .models import Alert, Monitor
 
 log = get_task_logger(__name__)
+
+CHECK_LOCK_TTL_S = 30
 
 
 @shared_task
@@ -41,6 +43,18 @@ def enqueue_due_checks() -> int:
 
 @shared_task
 def run_check(monitor_id: int) -> None:
+    """Check one monitor, unless another worker is checking it right now."""
+    key = f"lock:monitor:{monitor_id}"
+    if not locks.acquire(key, CHECK_LOCK_TTL_S):
+        log.info("monitor %d is already being checked, skipping", monitor_id)
+        return
+    try:
+        _check(monitor_id)
+    finally:
+        locks.release(key)
+
+
+def _check(monitor_id: int) -> None:
     try:
         monitor = Monitor.objects.get(pk=monitor_id)
     except Monitor.DoesNotExist:

@@ -1,11 +1,13 @@
-"""Pulse's two outbound HTTP clients: one of each per process, built on first use.
+"""Pulse's long-lived network clients: one of each per process, built on first use.
 
-Why two, and why lazily: docs/adr/0001-shared-http-clients.md
+Why shared, and why lazily: docs/adr/0001-shared-http-clients.md
 """
 
 from functools import cache
 
 import httpx
+import redis
+from django.conf import settings
 
 WEBHOOK_TIMEOUT_S = 5
 
@@ -23,3 +25,9 @@ def probe_client() -> httpx.Client:
 def webhook_client() -> httpx.Client:
     """For alerts. Connections to the receiver are reused."""
     return httpx.Client(timeout=WEBHOOK_TIMEOUT_S)
+
+
+@cache
+def redis_client() -> redis.Redis:
+    """For locks. The cache goes through Django's cache framework instead."""
+    return redis.Redis.from_url(settings.PULSE_REDIS_URL)
