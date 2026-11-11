@@ -4,7 +4,10 @@ Pulse is an uptime monitor and status page. It checks HTTP services on a schedul
 records every result, opens and resolves incidents, sends signed alerts to a webhook,
 and serves a public status page.
 
-Built with Django, PostgreSQL and Docker Compose.
+Built with Django, PostgreSQL, Celery, Redis and Docker Compose.
+
+How it fits together: [ARCHITECTURE.md](ARCHITECTURE.md) (C4 diagrams, data model,
+request and task flows). Why it is built this way: [docs/adr/](docs/adr/).
 
 ## Prerequisites
 
