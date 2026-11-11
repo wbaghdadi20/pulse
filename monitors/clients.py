@@ -9,8 +9,6 @@ import httpx
 import redis
 from django.conf import settings
 
-WEBHOOK_TIMEOUT_S = 5
-
 
 @cache
 def probe_client() -> httpx.Client:
@@ -24,7 +22,7 @@ def probe_client() -> httpx.Client:
 @cache
 def webhook_client() -> httpx.Client:
     """For alerts. Connections to the receiver are reused."""
-    return httpx.Client(timeout=WEBHOOK_TIMEOUT_S)
+    return httpx.Client(timeout=settings.PULSE_WEBHOOK_TIMEOUT_S)
 
 
 @cache

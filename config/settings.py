@@ -159,6 +159,7 @@ CELERY_TIMEZONE = TIME_ZONE
 PULSE_WEBHOOK_URL = env_str("PULSE_WEBHOOK_URL", default="http://catcher:8000/webhook")
 PULSE_WEBHOOK_SECRET = env_str("PULSE_WEBHOOK_SECRET")
 PULSE_ALERT_MAX_ATTEMPTS = env_int("PULSE_ALERT_MAX_ATTEMPTS", default=5)
+PULSE_WEBHOOK_TIMEOUT_S = env_int("PULSE_WEBHOOK_TIMEOUT_S", default=5)
 
 # Redis, second use: locks and the cache. Database 1: the broker's queue is in
 # database 0, and emptying a cache must never be able to drop queued tasks.
