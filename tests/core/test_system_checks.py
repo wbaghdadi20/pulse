@@ -30,6 +30,18 @@ def test_alert_attempts_bounds_are_inclusive(settings, value):
     assert pulse_errors() == []
 
 
+@pytest.mark.parametrize("value", [-1, 301])
+def test_out_of_range_status_cache_seconds_is_reported(settings, value):
+    settings.PULSE_STATUS_CACHE_SECONDS = value
+    assert [e.id for e in pulse_errors()] == ["pulse.E003"]
+
+
+@pytest.mark.parametrize("value", [0, 300])
+def test_status_cache_seconds_bounds_are_inclusive(settings, value):
+    settings.PULSE_STATUS_CACHE_SECONDS = value
+    assert pulse_errors() == []
+
+
 def test_every_bad_setting_gets_its_own_error(settings):
     settings.PULSE_FAIL_THRESHOLD = 0
     settings.PULSE_OK_THRESHOLD = 99
