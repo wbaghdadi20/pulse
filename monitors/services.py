@@ -15,7 +15,7 @@ from django.utils import timezone
 
 from core.db import violated_constraint
 
-from . import alerting, incidents, uptime
+from . import alerting, incidents, status_page, uptime
 from .checks import CheckResult, probe
 from .errors import IncidentAlreadyOpen, MonitorNameTaken, MonitorNotFound
 from .models import Alert, Check, Incident, Monitor
@@ -131,6 +131,7 @@ def open_incident_for(
         with transaction.atomic():
             incident = Incident.objects.create(monitor=monitor, kind=kind, cause=cause)
             alerting.queue_alert(incident, Alert.Kind.OPENED)
+            status_page.invalidate()
             return incident
     except IntegrityError as exc:
         if violated_constraint(exc) == "uq_one_open_incident_per_kind":
@@ -143,6 +144,7 @@ def resolve_incident(incident: Incident, now: datetime | None = None) -> Inciden
         incident.resolved_at = now or timezone.now()
         incident.save(update_fields=["resolved_at"])
         alerting.queue_alert(incident, Alert.Kind.RESOLVED)
+        status_page.invalidate()
     return incident
 
 
