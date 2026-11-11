@@ -54,11 +54,11 @@ def run_check(monitor_id: int) -> None:
 
 @shared_task(bind=True, max_retries=MAX_ALERT_ATTEMPTS - 1)
 def send_alert(self: Task[Any, Any], alert_id: int) -> None:
-    """Deliver one alert at most once; retry with exponential backoff while the receiver fails.
+    """Deliver one alert; retry with exponential backoff while the receiver fails.
 
-    Idempotent: a message that arrives twice (a retry after a timeout where the first
-    attempt did get through, or a duplicate queueing) finds the row already sent and
-    stops. Only the receiver failing is a task failure: a down target never is.
+    At-least-once: a second run for an alert already sent stops, but an attempt the
+    receiver stored and answered too late is retried and arrives twice.
+    Only the receiver failing is a task failure: a down target never is.
     """
     try:
         alert = Alert.objects.select_related("incident__monitor").get(pk=alert_id)
