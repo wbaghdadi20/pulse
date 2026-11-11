@@ -3,6 +3,7 @@
 Why it is cached this way: docs/adr/0009-status-page-cache.md
 """
 
+from collections import defaultdict
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any
@@ -56,19 +57,9 @@ def build_status_page(now: datetime | None = None) -> dict[str, Any]:
             "monitor_id", flat=True
         )
     )
-    monitors = [
-        {
-            "id": monitor["id"],
-            "name": monitor["name"],
-            "state": "down" if monitor["id"] in down else "up",
-            **_uptime(stats.get(monitor["id"])),
-            "incidents": [],
-        }
-        for monitor in Monitor.objects.order_by("name", "id").values("id", "name")
-    ]
-    by_id = {monitor["id"]: monitor for monitor in monitors}
+    incidents: defaultdict[int, list[dict[str, Any]]] = defaultdict(list)
     for incident in _recent_incidents():
-        by_id[incident.monitor_id]["incidents"].append(
+        incidents[incident.monitor_id].append(
             {
                 "id": incident.pk,
                 "kind": incident.kind,
@@ -77,6 +68,18 @@ def build_status_page(now: datetime | None = None) -> dict[str, Any]:
                 "resolved_at": incident.resolved_at,
             }
         )
+    # Monitors last: one created or deleted while the queries above ran is then
+    # simply absent from them, rather than a key that is missing.
+    monitors = [
+        {
+            "id": monitor["id"],
+            "name": monitor["name"],
+            "state": "down" if monitor["id"] in down else "up",
+            **_uptime(stats.get(monitor["id"])),
+            "incidents": incidents.get(monitor["id"], []),
+        }
+        for monitor in Monitor.objects.order_by("name", "id").values("id", "name")
+    ]
     return {"generated_at": now, "window_days": WINDOW_DAYS, "monitors": monitors}
 
 
