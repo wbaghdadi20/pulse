@@ -15,10 +15,13 @@ from django.db.models import (
     DateTimeField,
     ExpressionWrapper,
     F,
+    OuterRef,
     QuerySet,
+    Subquery,
     Value,
     When,
 )
+from django.db.models.functions import JSONObject
 from django.db.models.lookups import GreaterThan
 from django.utils import timezone
 
@@ -30,14 +33,36 @@ from .errors import IncidentAlreadyOpen, MonitorNameTaken, MonitorNotFound
 from .models import Alert, Check, Incident, Monitor
 
 
+def _monitors() -> QuerySet[Monitor]:
+    """Monitors, each with its newest check as `latest_check`, in one query.
+
+    A correlated subquery builds the check as a JSON object. With LIMIT 1 over the
+    (monitor_id, checked_at) index it reads one index entry per monitor.
+    """
+    newest_check = (
+        Check.objects.filter(monitor=OuterRef("pk"))
+        .order_by("-checked_at", "-id")
+        .values(
+            as_json=JSONObject(
+                checked_at="checked_at",
+                ok="ok",
+                status_code="status_code",
+                latency_ms="latency_ms",
+                error_type="error_type",
+            )
+        )[:1]
+    )
+    return Monitor.objects.annotate(latest_check=Subquery(newest_check))
+
+
 def list_monitors() -> QuerySet[Monitor]:
     # Lazy: the paginator adds COUNT(*) and LIMIT/OFFSET before anything runs.
-    return Monitor.objects.order_by("id")
+    return _monitors().order_by("id")
 
 
 def get_monitor(pk: int) -> Monitor:
     try:
-        return Monitor.objects.get(pk=pk)
+        return _monitors().get(pk=pk)
     except Monitor.DoesNotExist:
         raise MonitorNotFound(pk) from None
 
