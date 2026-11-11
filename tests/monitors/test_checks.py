@@ -10,6 +10,7 @@ import time
 import httpx
 import pytest
 
+from monitors import clients
 from monitors.checks import run_check
 from monitors.models import Monitor
 
@@ -101,18 +102,22 @@ def test_other_network_error_is_classified_as_error():
     assert run_check(make_monitor(), client)["error_type"] == "error"
 
 
-def test_without_a_client_it_opens_its_own(monkeypatch):
-    # Production passes no client. Make httpx.Client() hand back a fake one, so the
-    # "open a client, use it, close it" branch runs without the network.
-    real_client = httpx.Client  # fake_client() itself needs the real class
-    monkeypatch.setattr(
-        httpx,
-        "Client",
-        lambda **kw: real_client(
-            transport=httpx.MockTransport(lambda request: httpx.Response(200))
-        ),
-    )
+def test_without_a_client_it_uses_the_shared_probe_client(monkeypatch):
+    shared = fake_client(lambda request: httpx.Response(200))
+    monkeypatch.setattr(clients, "probe_client", lambda: shared)
+
     assert run_check(make_monitor())["ok"] is True
+    assert not shared.is_closed, "the shared client outlives the check"
+
+
+def test_building_the_client_is_not_counted_as_latency(monkeypatch):
+    def slow_to_build() -> httpx.Client:
+        time.sleep(0.05)
+        return fake_client(lambda request: httpx.Response(200))
+
+    monkeypatch.setattr(clients, "probe_client", slow_to_build)
+
+    assert run_check(make_monitor())["latency_ms"] < 50
 
 
 def test_sends_the_monitors_timeout():

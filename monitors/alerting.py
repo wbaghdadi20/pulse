@@ -10,7 +10,6 @@ import json
 import random
 from typing import Any
 
-import httpx
 from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import F
@@ -18,6 +17,7 @@ from django.utils import timezone
 
 from core.db import violated_constraint
 
+from . import clients
 from .models import Alert, Incident
 
 SIGNATURE_HEADER = "X-Pulse-Signature"
@@ -51,10 +51,9 @@ def deliver(alert: Alert) -> None:
         payload_for(alert), sort_keys=True, separators=(",", ":")
     ).encode()
     headers = {"Content-Type": "application/json", SIGNATURE_HEADER: sign(body)}
-    with new_client() as client:
-        response = client.post(
-            settings.PULSE_WEBHOOK_URL, content=body, headers=headers
-        )
+    response = clients.webhook_client().post(
+        settings.PULSE_WEBHOOK_URL, content=body, headers=headers
+    )
     response.raise_for_status()
 
     Alert.objects.filter(pk=alert.pk).update(
@@ -102,7 +101,3 @@ def sign(body: bytes) -> str:
     """HMAC-SHA256 over the exact bytes sent; the catcher recomputes it over the bytes received."""
     secret: str = settings.PULSE_WEBHOOK_SECRET
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-
-
-def new_client() -> httpx.Client:
-    return httpx.Client(timeout=5)

@@ -14,7 +14,7 @@ import httpx
 import pytest
 from django.conf import settings
 
-from monitors import alerting, services, tasks
+from monitors import alerting, clients, services, tasks
 from monitors.models import Alert, Incident
 
 pytestmark = pytest.mark.django_db
@@ -34,8 +34,8 @@ class Receiver:
 def webhook(monkeypatch) -> Receiver:
     receiver = Receiver()
     monkeypatch.setattr(
-        alerting,
-        "new_client",
+        clients,
+        "webhook_client",
         lambda: httpx.Client(transport=httpx.MockTransport(receiver.handle)),
     )
     return receiver
@@ -237,8 +237,8 @@ def test_an_unreachable_receiver_counts_as_a_failed_attempt(
         raise httpx.ConnectError("connection refused", request=request)
 
     monkeypatch.setattr(
-        alerting,
-        "new_client",
+        clients,
+        "webhook_client",
         lambda: httpx.Client(transport=httpx.MockTransport(refuse)),
     )
 
