@@ -10,7 +10,16 @@ from typing import Any
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import DateTimeField, ExpressionWrapper, F, QuerySet, Value
+from django.db.models import (
+    Case,
+    DateTimeField,
+    ExpressionWrapper,
+    F,
+    QuerySet,
+    Value,
+    When,
+)
+from django.db.models.lookups import GreaterThan
 from django.utils import timezone
 
 from core.db import violated_constraint
@@ -53,14 +62,17 @@ def delete_monitor(monitor: Monitor) -> None:
 def claim_due_monitors(now: datetime | None = None) -> list[tuple[int, int]]:
     """(id, interval_s) of every monitor that is due, each claimed for this caller.
 
-    Claiming moves next_check_at one interval ahead in the same transaction that
-    found the monitor due, so it is handed out once per interval however many
-    callers ask. Rows another caller is claiming right now are skipped, not waited for.
+    Claiming moves next_check_at to the monitor's next slot in the same transaction
+    that found it due, so it is handed out once per interval however many callers
+    ask. Rows another caller is claiming right now are skipped, not waited for.
     """
     now = now or timezone.now()
-    next_slot = ExpressionWrapper(
-        Value(now) + F("interval_s") * timedelta(seconds=1),
-        output_field=DateTimeField(),
+    interval = F("interval_s") * timedelta(seconds=1)
+    following_slot = ExpressionWrapper(
+        F("next_check_at") + interval, output_field=DateTimeField()
+    )
+    one_interval_from_now = ExpressionWrapper(
+        Value(now) + interval, output_field=DateTimeField()
     )
     with transaction.atomic():
         due = list(
@@ -69,7 +81,13 @@ def claim_due_monitors(now: datetime | None = None) -> list[tuple[int, int]]:
             .values_list("id", "interval_s")
         )
         Monitor.objects.filter(pk__in=[pk for pk, _ in due]).update(
-            next_check_at=next_slot
+            # Slots stay on a fixed grid (previous slot + interval), so a 10 s monitor
+            # is due at every 10 s tick. Only when a whole slot was missed (workers
+            # were down) does the grid restart from now, instead of catching up.
+            next_check_at=Case(
+                When(GreaterThan(following_slot, Value(now)), then=following_slot),
+                default=one_interval_from_now,
+            )
         )
     return due
 
