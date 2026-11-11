@@ -19,11 +19,13 @@ Who uses Pulse and what it talks to.
 flowchart TB
     operator["<b>Operator</b><br/>[Person]<br/>Creates monitors, reads uptime,<br/>sets maintenance windows"]
     oncall["<b>On-call engineer</b><br/>[Person]<br/>Reads alerts"]
-    pulse["<b>Pulse</b><br/>[Software system]<br/>Checks HTTP services on a schedule,<br/>records every result, opens and resolves<br/>incidents, sends signed alerts"]
+    visitor["<b>Visitor</b><br/>[Person]<br/>Reads the public status page"]
+    pulse["<b>Pulse</b><br/>[Software system]<br/>Checks HTTP services on a schedule,<br/>records every result, opens and resolves<br/>incidents, sends signed alerts,<br/>serves a status page"]
     targets["<b>Monitored services</b><br/>[External systems]<br/>flaky and shop today"]
     receiver["<b>Alert receiver</b><br/>[External system]<br/>catcher, standing in for<br/>Slack or PagerDuty"]
 
     operator -- "manages monitors<br/>[JSON over HTTP]" --> pulse
+    visitor -- "GET /status, no login<br/>[JSON over HTTP]" --> pulse
     pulse -- "checks<br/>[HTTP GET or HEAD]" --> targets
     pulse -- "incident opened or resolved<br/>[signed webhook, HTTP POST]" --> receiver
     oncall -- "reads alerts<br/>[HTTP]" --> receiver
@@ -31,7 +33,7 @@ flowchart TB
     classDef person fill:#08427b,stroke:#052e56,color:#ffffff
     classDef system fill:#1168bd,stroke:#0b4884,color:#ffffff
     classDef external fill:#6b6b6b,stroke:#4a4a4a,color:#ffffff
-    class operator,oncall person
+    class operator,oncall,visitor person
     class pulse system
     class targets,receiver external
 ```
@@ -47,12 +49,13 @@ three different commands.
 ```mermaid
 flowchart TB
     operator["<b>Operator</b><br/>[Person]"]
+    visitor["<b>Visitor</b><br/>[Person]"]
 
     subgraph pulse ["Pulse"]
-        api["<b>api</b><br/>[Container: Django + DRF on gunicorn]<br/>REST API: monitors, check now,<br/>uptime, incidents"]
+        api["<b>api</b><br/>[Container: Django + DRF on gunicorn]<br/>REST API: monitors, check now,<br/>uptime, incidents, status page"]
         beat["<b>beat</b><br/>[Container: Celery beat]<br/>The clock. Queues one<br/>enqueue_due_checks every 10 s"]
         worker["<b>worker</b><br/>[Container: Celery worker]<br/>Runs checks, evaluates incidents,<br/>delivers alerts"]
-        redis[("<b>redis</b><br/>[Container: Redis 7]<br/>Celery broker: the task queue")]
+        redis[("<b>redis</b><br/>[Container: Redis 7]<br/>db 0: Celery broker, the task queue<br/>db 1: status page cache, check locks")]
         postgres[("<b>postgres</b><br/>[Container: PostgreSQL 16]<br/>monitors, checks,<br/>incidents, alerts")]
     end
 
@@ -60,11 +63,13 @@ flowchart TB
     catcher["<b>catcher</b><br/>[External system: FastAPI]<br/>Alert inbox, verifies signatures"]
 
     operator -- "REST calls<br/>[JSON over HTTP, host port 8100]" --> api
+    visitor -- "GET /status<br/>[JSON over HTTP]" --> api
+    api -- "reads and fills the status page cache<br/>[Redis protocol]" --> redis
     api -- "reads and writes<br/>[SQL, psycopg]" --> postgres
     api -- "queues send_alert<br/>[Redis protocol]" --> redis
     api -- "check now<br/>[HTTP]" --> targets
     beat -- "queues enqueue_due_checks<br/>[Redis protocol]" --> redis
-    worker -- "takes tasks, queues run_check<br/>and send_alert [Redis protocol]" --> redis
+    worker -- "takes tasks, queues run_check and send_alert,<br/>locks a monitor while checking it,<br/>drops the cached page [Redis protocol]" --> redis
     worker -- "reads and writes<br/>[SQL, psycopg]" --> postgres
     worker -- "scheduled checks<br/>[HTTP]" --> targets
     worker -- "signed alert<br/>[HTTP POST, HMAC-SHA256]" --> catcher
@@ -73,7 +78,7 @@ flowchart TB
     classDef container fill:#438dd5,stroke:#2e6295,color:#ffffff
     classDef store fill:#438dd5,stroke:#2e6295,color:#ffffff
     classDef external fill:#6b6b6b,stroke:#4a4a4a,color:#ffffff
-    class operator person
+    class operator,visitor person
     class api,beat,worker container
     class redis,postgres store
     class targets,catcher external
@@ -84,7 +89,7 @@ flowchart TB
 | `api`      | more replicas behind a load balancer         | none                          |
 | `worker`   | `--scale worker=N`                           | none                          |
 | `beat`     | exactly one, two would queue everything twice | schedule file in `/tmp`       |
-| `redis`    | single instance                              | queued tasks, no named volume |
+| `redis`    | single instance                              | queued tasks, locks and the cached page; no named volume, all of it can be lost |
 | `postgres` | single instance                              | the system of record (volume `pgdata`) |
 
 `api` can queue a task as well as `worker`: "check now" runs the same service code,
@@ -154,30 +159,42 @@ flowchart TB
     end
 
     subgraph domain ["Domain: no HTTP in, no Celery in"]
-        services["<b>monitors/services.py</b><br/>Business rules: CRUD, check_monitor,<br/>evaluate_incidents, uptime, open and resolve"]
+        services["<b>monitors/services.py</b><br/>Business rules: CRUD, claim_due_monitors,<br/>check_monitor, evaluate_incidents,<br/>uptime, open and resolve"]
+        statuspage["<b>monitors/status_page.py</b><br/>Build the public page in four queries,<br/>cache it, invalidate it"]
+        uptime["<b>monitors/uptime.py</b><br/>The uptime and p95 aggregates"]
         incidents["<b>monitors/incidents.py</b><br/>[Pure function]<br/>decide: open, resolve or nothing"]
         alerting["<b>monitors/alerting.py</b><br/>Record an alert, sign it, deliver it,<br/>retry policy"]
-        checks["<b>monitors/checks.py</b><br/>probe: one HTTP call,<br/>classified into a CheckResult"]
+        checks["<b>monitors/checks.py</b><br/>probe: one HTTP call with a deadline,<br/>classified into a CheckResult"]
     end
 
     subgraph infra ["Infrastructure"]
         models["<b>monitors/models.py</b><br/>[Django ORM]<br/>Monitor, Check, Incident, Alert<br/>and their constraints"]
-        clients["<b>monitors/clients.py</b><br/>[httpx]<br/>probe_client, webhook_client"]
+        clients["<b>monitors/clients.py</b><br/>[httpx, redis-py]<br/>probe_client, webhook_client,<br/>redis_client"]
+        locks["<b>monitors/locks.py</b><br/>[Redis SET NX EX, Lua]<br/>acquire, release if still ours"]
+        cache["<b>Django cache framework</b><br/>[Redis backend]"]
         db["<b>core/db.py</b><br/>PercentileCont, violated_constraint"]
     end
 
     http --> views
     views --> serializers
     views --> services
+    views --> statuspage
     services -. "raises MonitorNotFound,<br/>MonitorNameTaken, IncidentAlreadyOpen" .-> handler
     task --> tasks
     tasks --> services
     tasks --> alerting
+    tasks --> locks
     services --> checks
     services --> incidents
     services --> alerting
     services --> models
     services --> db
+    services --> uptime
+    services -. "invalidate after commit" .-> statuspage
+    statuspage --> uptime
+    statuspage --> models
+    statuspage --> cache
+    locks --> clients
     alerting --> models
     alerting -. "queues send_alert<br/>after commit" .-> tasks
     checks --> clients
@@ -214,6 +231,7 @@ erDiagram
         jsonb assertions "nullable"
         timestamptz created_at
         timestamptz last_checked_at "nullable"
+        timestamptz next_check_at "indexed, the scheduler cursor"
         timestamptz maintenance_until "nullable"
     }
     CHECK {
@@ -247,7 +265,8 @@ erDiagram
 | Table       | Index or constraint                                                          | Serves                                         |
 | ----------- | ---------------------------------------------------------------------------- | ---------------------------------------------- |
 | `monitors`  | `uq_monitor_name` unique `(name)`                                            | duplicate name is a 409, decided by Postgres   |
-| `checks`    | `checks_monitor_checked_idx` on `(monitor_id, checked_at)`                   | the uptime query and "last N checks"           |
+| `monitors`  | index on `(next_check_at)`                                                   | "which monitors are due" every 10 s            |
+| `checks`    | `checks_monitor_checked_idx` on `(monitor_id, checked_at)`                   | the uptime query, "last N checks", the status page |
 | `incidents` | `uq_one_open_incident_per_kind` unique `(monitor_id, kind)` where `resolved_at IS NULL` | at most one open incident per monitor and kind |
 | `alerts`    | `uq_alert_incident_kind` unique `(incident_id, kind)`                        | one alert per incident event, however often it is queued |
 
@@ -274,7 +293,7 @@ sequenceDiagram
     Note over V,S: unknown id raises MonitorNotFound, mapped to 404
     V->>S: check_monitor(monitor)
     S->>P: probe(monitor)
-    P->>T: GET url with timeout_s
+    P->>T: GET url, timeout_s per wait and in total
     T-->>P: response, or timeout, refused, DNS failure
     P-->>S: CheckResult, never an exception
     S->>DB: INSERT check
@@ -299,32 +318,42 @@ not an error in Pulse.
 ```mermaid
 sequenceDiagram
     participant B as beat
-    participant R as Redis
+    participant R0 as Redis db 0, queue
     participant W as worker
     participant DB as Postgres
+    participant R1 as Redis db 1, locks
     participant T as Target
 
     loop every 10 s
-        B->>R: enqueue_due_checks
+        B->>R0: enqueue_due_checks
     end
-    R->>W: enqueue_due_checks
-    W->>DB: SELECT id FROM monitors that are due
-    Note over W,DB: due means never checked, or last_checked_at + interval_s has passed
-    loop each due monitor
-        W->>R: run_check(monitor_id)
+    R0->>W: enqueue_due_checks
+    W->>DB: BEGIN
+    W->>DB: SELECT id, interval_s WHERE next_check_at has passed FOR UPDATE SKIP LOCKED
+    W->>DB: UPDATE next_check_at = now + interval_s for those rows
+    W->>DB: COMMIT
+    Note over W,DB: claimed. No other caller gets these monitors before their next slot
+    loop each claimed monitor
+        W->>R0: run_check(monitor_id), expires after interval_s
     end
-    R->>W: run_check(monitor_id)
-    W->>DB: SELECT monitor
-    Note over W: a monitor deleted in the meantime is logged and skipped
-    W->>T: probe
-    T-->>W: result
-    W->>DB: INSERT check, UPDATE last_checked_at
-    W->>W: evaluate_incidents, as in check now
+    R0->>W: run_check(monitor_id)
+    W->>R1: SET lock:monitor:id token NX EX 90
+    alt key already there
+        Note over W: another worker is checking this monitor, skip
+    else lock taken
+        W->>DB: SELECT monitor
+        W->>T: probe
+        T-->>W: result
+        W->>DB: INSERT check, UPDATE last_checked_at
+        W->>W: evaluate_incidents, as in check now
+        W->>R1: delete the key if it still holds our token
+    end
 ```
 
 From `services.check_monitor` onward this is the same code path as "check now".
 Task arguments are ids, never objects: they cross Redis as JSON and the row is
-loaded fresh when the task runs.
+loaded fresh when the task runs. Celery kills a `run_check` after 75 s, so a lock
+(90 s) cannot expire under a check that is still running.
 
 ### Alert delivery
 
@@ -364,6 +393,38 @@ sequenceDiagram
 
 Delivery is at-least-once. The receiver can deduplicate on `incident_id` plus
 `event`, both in the payload.
+
+### Status page: `GET /status`
+
+```mermaid
+sequenceDiagram
+    actor Visitor
+    participant V as views.StatusPageView
+    participant P as status_page
+    participant C as Redis db 1, cache
+    participant DB as Postgres
+    participant S as services
+
+    Visitor->>V: GET /status
+    V->>P: get_status_page()
+    P->>C: GET status:page
+    alt hit
+        C-->>P: the page
+    else miss
+        P->>DB: monitors
+        P->>DB: uptime and p95 per monitor over 90 days
+        P->>DB: open incidents
+        P->>DB: latest 3 incidents per monitor
+        P->>C: SET status:page, expires in 15 s
+    end
+    P-->>V: page
+    V-->>Visitor: 200
+
+    Note over S,C: meanwhile, an incident opens or resolves
+    S->>DB: BEGIN, write incident and alert, COMMIT
+    S->>C: after commit, DEL status:page
+    Note over Visitor,C: the next request is a miss and shows the change
+```
 
 ## State machines
 
@@ -405,15 +466,22 @@ stateDiagram-v2
 | [0005](docs/adr/0005-scheduling.md) | Celery with Redis, one beat tick that queues what is due |
 | [0006](docs/adr/0006-alert-delivery.md) | Alerts: row first, queue on commit, at-least-once delivery |
 | [0007](docs/adr/0007-targets-as-separate-services.md) | Targets and the receiver are separate services |
+| [0008](docs/adr/0008-one-check-per-interval.md) | One check per interval: claim in Postgres, lock in Redis |
+| [0009](docs/adr/0009-status-page-cache.md) | The status page is cached by key and dropped when an incident changes |
+| [0010](docs/adr/0010-check-deadline.md) | A check has a total deadline, not only a timeout per wait |
 
 ## Known limits
 
 | Limit | Effect | Where it is addressed |
 | ----- | ------ | --------------------- |
-| A monitor is "due" until its check finishes | a check slower than its interval, or a backlog, is queued again and runs twice | D7 |
-| `timeout_s` bounds each network phase, not the whole request | a target that trickles bytes can hold a worker longer than `timeout_s` | D7, task time limit |
-| `checks` is never pruned | the 90-day uptime query slows as the table grows | not scheduled: retention or daily roll-ups |
+| A check slower than its interval makes the lock skip the next slot | such a monitor is checked every second or third interval | not scheduled: reject `timeout_s` above `interval_s` |
+| The check deadline is only looked at between reads | a target that trickles its response headers runs to the 75 s kill, which records no check | not scheduled: an async client under one deadline |
+| A worker that crashes mid-check leaves its lock for up to 90 s | that monitor is not checked until the lock expires | accepted: the price of a TTL that never expires under a live check |
+| A crash between claiming a monitor and queueing its check | that interval's check is lost, the next one runs | accepted: at most once per interval |
+| Every request that misses the status cache rebuilds the page | a burst right after an invalidation runs the heavy query many times at once | not scheduled: a lock around the rebuild, or rebuild in a worker |
+| `checks` is never pruned | the 90-day queries slow as the table grows | not scheduled: retention or daily roll-ups |
 | An alert whose `send_alert` message is lost stays `pending` | broker down at commit, or a worker killed mid-task | not scheduled: a periodic sweep of old pending alerts |
+| One Redis for queue, locks and cache | losing it stops checks, alerts and the status page together | separate instances in production |
 | No authentication | anyone who reaches port 8100 can change monitors | D8 |
 | Monitor URLs may point anywhere the containers can reach | with untrusted users this is server-side request forgery | D8, with authentication |
 | One `requirements.txt` | test and lint tools ship in the production image | D9 |
