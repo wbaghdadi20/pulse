@@ -17,7 +17,7 @@ from django.utils import timezone
 from core.db import PercentileCont, violated_constraint
 
 from . import alerting, incidents
-from .checks import run_check
+from .checks import CheckResult, probe
 from .errors import IncidentAlreadyOpen, MonitorNameTaken, MonitorNotFound
 from .models import Alert, Check, Incident, Monitor
 
@@ -51,9 +51,9 @@ def delete_monitor(monitor: Monitor) -> None:
     monitor.delete()  # its checks and incidents go too (on_delete=CASCADE)
 
 
-def check_monitor(monitor: Monitor) -> dict[str, Any]:
+def check_monitor(monitor: Monitor) -> CheckResult:
     """Check once, record the result, then let the state machine react to it."""
-    result = run_check(monitor)
+    result = probe(monitor)
     check = Check.objects.create(monitor=monitor, **result)
     Monitor.objects.filter(pk=monitor.pk).update(last_checked_at=check.checked_at)
     evaluate_incidents(monitor)

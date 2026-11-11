@@ -43,10 +43,10 @@ def monitor(db) -> Monitor:
 
 
 class FakeCheck:
-    """Stand-in for monitors.checks.run_check that returns a canned result.
+    """Stand-in for monitors.checks.probe that returns a canned result.
 
     Call it to set what the next checks report, e.g. fake_check(ok=False).
-    `calls` lists the monitors run_check was called with, in order.
+    `calls` lists the monitors probe was called with, in order.
     """
 
     def __init__(self) -> None:
@@ -56,7 +56,7 @@ class FakeCheck:
     def __call__(self, **kwargs: Any) -> None:
         self.result = _result(**kwargs)
 
-    def run_check(
+    def probe(
         self, monitor: Monitor, client: httpx.Client | None = None
     ) -> dict[str, Any]:
         self.calls.append(monitor)
@@ -67,8 +67,8 @@ class FakeCheck:
 def fake_check(monkeypatch: pytest.MonkeyPatch) -> FakeCheck:
     """Replace the real HTTP call with a canned result."""
     fake = FakeCheck()
-    # services.py imported run_check by name, so patch it where it's looked up.
-    monkeypatch.setattr("monitors.services.run_check", fake.run_check)
+    # services.py imported probe by name, so patch it where it's looked up.
+    monkeypatch.setattr("monitors.services.probe", fake.probe)
     return fake
 
 

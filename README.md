@@ -594,12 +594,14 @@ Four kinds of tests, fastest first:
 | -------------------------------------------------------------------- | --------------------------------------------------------------------------- | ----------------- |
 | `tests/monitors/test_incidents.py`, `test_validators.py`             | pure logic                                                                  | nothing           |
 | `tests/monitors/test_incidents_properties.py`                        | Hypothesis: random up/down sequences through `decide()`, four invariants    | nothing           |
-| `tests/monitors/test_checks.py`                                      | `run_check()` against `httpx.MockTransport`: every `error_type`, no network | nothing           |
+| `tests/monitors/test_checks.py`                                      | `probe()` against `httpx.MockTransport`: every `error_type`, no network     | nothing           |
+| `tests/monitors/test_clients.py`                                     | the two shared httpx clients against a loopback server that counts connections | nothing        |
 | `tests/monitors/test_api.py`, `test_incident_flow.py`, `tests/core/` | the full stack through DRF's `APIClient`                                    | the test database |
 
-Two things are injectable so tests can control them: `run_check(monitor, client=...)`
-takes an httpx client (tests pass a fake transport), and `get_uptime(..., now=...)`
-takes the current time. The database tests are the ones marked `django_db`, so
+Two things are injectable so tests can control them: `probe(monitor, client=...)`
+takes an httpx client (tests pass a fake transport; production passes nothing and
+gets the process's shared client from `monitors/clients.py`), and
+`get_uptime(..., now=...)` takes the current time. The database tests are the ones marked `django_db`, so
 `-m "not django_db"` is the unit/integration switch: no extra markers to maintain.
 Coverage is configured in `pyproject.toml`; the suite sits at ~97%.
 
@@ -638,7 +640,7 @@ no survivors.
 
 The 18 killed survivors were real gaps, each now a test: the uptime and incident
 queries were never checked to filter by monitor (`test_uptime_counts_only_this_monitors_checks`,
-`test_incidents_are_per_monitor`), `run_check`'s own-client branch and the timeout
+`test_incidents_are_per_monitor`), the probe's no-client branch and the timeout
 it sends were untested, latency was never asserted to be in milliseconds, the 409
 messages and the incident `cause` were never read, and `PATCH` with invalid input
 had no test. Most of what survives is error-message wording, `output_field` on an
