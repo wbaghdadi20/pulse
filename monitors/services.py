@@ -92,9 +92,13 @@ def evaluate_incidents(monitor: Monitor) -> incidents.Action:
         ok_threshold=ok_threshold,
     )
     if action is incidents.Action.OPEN:
-        open_incident_for(
-            monitor, cause=f"{fail_threshold} failed checks in a row", kind=kind
-        )
+        try:
+            open_incident_for(
+                monitor, cause=f"{fail_threshold} failed checks in a row", kind=kind
+            )
+        except IncidentAlreadyOpen:
+            # Another check of this monitor opened it between our read and our insert.
+            return incidents.Action.NOTHING
     elif action is incidents.Action.RESOLVE:
         assert current is not None, "decide() only resolves when incident_open=True"
         resolve_incident(current)
