@@ -97,11 +97,13 @@ def test_check_now_becomes_the_latest_check(api, monitor, fake_check):
 
 
 @pytest.mark.parametrize("count", [1, 5])
-def test_listing_monitors_takes_one_more_query_per_monitor(
+def test_listing_monitors_takes_two_queries_however_many_there_are(
     api, db, django_assert_num_queries, count
 ):
-    """The N+1 problem: COUNT, the page of monitors, then one query for each of them."""
+    """No N+1: COUNT, then one query for the page with every latest check in it."""
     make_monitors(count)
 
-    with django_assert_num_queries(2 + count):
-        api.get("/monitors/")
+    with django_assert_num_queries(2):
+        rows = api.get("/monitors/").json()["results"]
+
+    assert [row["latest_check"]["ok"] for row in rows] == [False] * count
