@@ -10,13 +10,12 @@ from typing import Any
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import Avg, Count, FloatField, IntegerField, QuerySet
-from django.db.models.functions import Cast
+from django.db.models import QuerySet
 from django.utils import timezone
 
-from core.db import PercentileCont, violated_constraint
+from core.db import violated_constraint
 
-from . import alerting, incidents
+from . import alerting, incidents, uptime
 from .checks import CheckResult, probe
 from .errors import IncidentAlreadyOpen, MonitorNameTaken, MonitorNotFound
 from .models import Alert, Check, Incident, Monitor
@@ -115,18 +114,9 @@ def get_uptime(
     """
     since = (now or timezone.now()) - timedelta(days=days)
     stats = Check.objects.filter(monitor=monitor, checked_at__gt=since).aggregate(
-        # avg(ok::int): true counts as 1, false as 0, so the average is the up ratio.
-        up_ratio=Avg(Cast("ok", IntegerField()), output_field=FloatField()),
-        p95_latency_ms=PercentileCont("latency_ms", 0.95),
-        checks=Count("id"),
+        **uptime.aggregates()
     )
-    no_checks = stats["checks"] == 0
-    return {
-        "days": days,
-        "uptime_percent": None if no_checks else round(stats["up_ratio"] * 100, 2),
-        "p95_latency_ms": None if no_checks else round(stats["p95_latency_ms"]),
-        "checks": stats["checks"],
-    }
+    return {"days": days, **uptime.summarise(stats)}
 
 
 def open_incident_for(
