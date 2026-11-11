@@ -470,6 +470,7 @@ stateDiagram-v2
 | [0009](docs/adr/0009-status-page-cache.md) | The status page is cached by key and dropped when an incident changes |
 | [0010](docs/adr/0010-check-deadline.md) | A check has a total deadline, not only a timeout per wait |
 | [0011](docs/adr/0011-keyset-pagination.md) | Keyset pagination next to limit/offset |
+| [0012](docs/adr/0012-latest-check-without-n-plus-one.md) | A monitor's latest check comes from the same query as the monitor |
 
 ## Known limits
 
