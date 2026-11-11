@@ -72,7 +72,7 @@ request and task flows). Why it is built this way: [docs/adr/](docs/adr/).
 | `api`      | Django app            | http://localhost:8100                      |
 | `postgres` | PostgreSQL 16         | `localhost:5433` (bound to 127.0.0.1 only) |
 | `flaky`    | test target (FastAPI) | http://localhost:8200                      |
-| `redis`    | Celery's queue        | not published                              |
+| `redis`    | Celery's queue (db 0), status page cache and check locks (db 1) | not published |
 | `worker`   | Celery worker: runs the scheduled checks and sends alerts | no port |
 | `beat`     | Celery beat: the clock that queues due checks every 10 s  | no port |
 | `catcher`  | alert inbox (FastAPI) | http://localhost:8400                      |
@@ -101,6 +101,7 @@ browsable API.
 | Method + URL                                | Does                                              | Success | Errors        |
 | ------------------------------------------- | ------------------------------------------------- | ------- | ------------- |
 | `GET /health`                               | liveness check                                    | 200     |               |
+| `GET /status`                               | public status page: state, 90-day uptime, p95, latest incidents | 200 |         |
 | `POST /monitors/`                           | create a monitor                                  | 201     | 400, 409      |
 | `GET /monitors/?limit&offset`               | list monitors (paginated)                         | 200     |               |
 | `GET /monitors/<id>/`                       | get one monitor                                   | 200     | 404           |
@@ -128,6 +129,9 @@ Conventions:
 - **"Check now" always returns 200.** A target that is down is a result, not an
   error in Pulse. `error_type` is one of `timeout`, `connection_refused`, `dns`,
   `wrong_status`, `assertion_failed`, or `error` (anything else, e.g. a TLS failure).
+  `timeout` covers both a target that goes silent and one that keeps sending but
+  has not finished within `timeout_s` in total
+  ([ADR 0010](docs/adr/0010-check-deadline.md)).
 - **JSON assertions** (optional field `assertions`): `{"<key>": "<expected value>"}`.
   When set, the check sends `Accept: application/json`, ignores the status code and
   passes only if every listed key has its expected value; otherwise `error_type` is
@@ -319,10 +323,10 @@ own, with Celery:
 
 ```
 beat ──every 10 s──▶ redis ──▶ worker: enqueue_due_checks()
-                                  │  SELECT id FROM monitors
-                                  │  WHERE last_checked_at IS NULL
-                                  │     OR last_checked_at + interval_s * '1 s' <= now()
-                                  └─▶ redis ──▶ worker: run_check(monitor_id)  (one message per due monitor)
+                                  │  claim: SELECT id FROM monitors WHERE next_check_at <= now()
+                                  │         FOR UPDATE SKIP LOCKED, then next_check_at = now() + interval_s
+                                  └─▶ redis ──▶ worker: run_check(monitor_id)  (one message per claimed monitor)
+                                                   │  lock:monitor:<id> in redis, skip if another worker holds it
                                                    └─▶ services.check_monitor(): the same code as "check now"
                                                          saves the check, stamps last_checked_at,
                                                          opens / resolves incidents
@@ -335,8 +339,9 @@ beat ──every 10 s──▶ redis ──▶ worker: enqueue_due_checks()
   skipped, not an error.
 - `monitors/tasks.py` holds the tasks; they are thin wrappers around
   `monitors/services.py`, so the API and the scheduler share one code path.
-- A monitor's interval is a lower bound: beat looks every 10 s, so a 10 s monitor is
-  checked every 10 or 20 s depending on where the tick lands.
+- Beat looks every 10 s, so a monitor is checked at the first tick after its slot.
+  Slots stay on a fixed grid (previous slot + `interval_s`), so a 10 s monitor is
+  checked every 10 s, not "10 s after the scheduler last got to it".
 
 ### Alerts
 
@@ -419,6 +424,174 @@ docker compose exec worker celery -A config inspect registered  # which tasks it
 docker compose exec redis redis-cli llen celery                 # messages waiting in the default queue
 ```
 
+## One check per interval
+
+With one worker Pulse looked correct. With three it checked the same monitor
+several times per interval, sometimes from two workers at once. Why, the options
+and the trade-offs: [ADR 0008](docs/adr/0008-one-check-per-interval.md).
+
+### Reproducing the duplicates
+
+```bash
+docker compose up -d --scale worker=3
+curl -X POST localhost:8200/mode -H 'Content-Type: application/json' -d '{"mode": "slow", "slow_seconds": 14}'
+curl -X PATCH localhost:8100/monitors/<id>/ -H 'Content-Type: application/json' -d '{"interval_s": 10, "timeout_s": 15}'
+```
+
+A check now takes 14 s and is due every 10 s. Two queries show the damage. The
+first finds checks that *finished* within 5 s of each other; the second finds
+checks that were *in flight together*: a check's start is `checked_at` minus its
+`latency_ms`.
+
+```sql
+-- finished close together
+SELECT monitor_id, checked_at, gap FROM (
+  SELECT monitor_id, checked_at,
+         checked_at - lag(checked_at) OVER (PARTITION BY monitor_id ORDER BY checked_at) AS gap
+  FROM checks WHERE checked_at > '<start of the run>'
+) t
+WHERE gap < interval '5 seconds';
+
+-- in flight together
+SELECT monitor_id, started_at, checked_at AS finished_at FROM (
+  SELECT monitor_id, checked_at,
+         checked_at - latency_ms * interval '1 ms' AS started_at,
+         lag(checked_at) OVER (PARTITION BY monitor_id ORDER BY checked_at) AS previous_finished_at
+  FROM checks WHERE checked_at > '<start of the run>'
+) t
+WHERE started_at < previous_finished_at;
+```
+
+Both need the time filter on a seeded database: `seed_checks` scatters its fake
+checks at random, seconds apart.
+
+Before the fix, on the code from D6:
+
+| Scenario | What happened |
+| -------- | ------------- |
+| 14 s checks, 10 s interval | checks in overlapping pairs: one starts at :02, the previous one finishes at :06. The first query stays empty (the pair *finishes* 10 s apart); the second finds every pair |
+| workers stopped for 38 s, then started | six checks of the monitor in one second: the first query returns five rows |
+
+```
+ monitor_id |          checked_at           |       gap
+------------+-------------------------------+-----------------
+         15 | 2026-11-11 07:25:15.277371+00 | 00:00:00.007184
+         15 | 2026-11-11 07:25:15.28039+00  | 00:00:00.003019
+         15 | 2026-11-11 07:25:15.291851+00 | 00:00:00.011461
+         15 | 2026-11-11 07:25:15.411178+00 | 00:00:00.119327
+         15 | 2026-11-11 07:25:16.297054+00 | 00:00:00.885876
+```
+
+The cause was the same both times. A monitor was "due" while `last_checked_at +
+interval_s` had passed, and `last_checked_at` only moved when a check *finished*.
+A slow check, or workers that were away, left the monitor due at the next tick.
+
+### The fix
+
+Two mechanisms, each for one problem:
+
+- **Claim in Postgres** so an interval is queued once. `enqueue_due_checks`
+  selects due monitors `FOR UPDATE SKIP LOCKED` and moves `next_check_at` to the
+  next slot in the same transaction.
+- **Lock in Redis** so a monitor is checked by one worker at a time. `run_check`
+  starts with `SET lock:monitor:<id> <token> NX EX 90` and skips if the key exists.
+
+|                           | Redis lock                                               | Postgres claim                                    |
+| ------------------------- | -------------------------------------------------------- | ------------------------------------------------- |
+| Simpler?                  | two functions and a Lua script, plus a TTL to get right  | one query and one column: the simpler of the two  |
+| Survives Redis being down? | no: without the lock store no check runs                 | yes, it only needs Postgres. In this stack Redis is also the queue, so nothing is queued either way |
+| 14 s check, 10 s interval | one check every 30 s                                     | one every 10 s, overlapping                       |
+| If only one               |                                                          | this one: it removes the cause and assumes nothing about how long a check takes |
+
+Both are kept because they stop different things. The claim cannot prevent a
+check that outlasts its interval from overlapping the next; the lock cannot
+prevent the duplicate message from being queued in the first place. Together, the
+slow monitor above is checked every 20 s, one check at a time.
+
+```bash
+docker compose exec redis redis-cli -n 1 keys 'lock:*'       # held locks
+docker compose exec redis redis-cli -n 1 ttl lock:monitor:<id>
+```
+
+### When the lock lies
+
+A first version of the lock had a 30 s TTL and released with a plain `DEL`. With
+the TTL set to 5 s and checks taking 14 s:
+
+1. Worker A takes the lock and starts checking.
+2. After 5 s the key expires. A is still checking.
+3. Worker B takes the lock and starts too. Two workers now "hold" it.
+4. A finishes and deletes the key. It is B's key. A third worker could now start.
+
+The checks overlapped exactly as they had without a lock. Two things were wrong,
+and each has its own fix:
+
+- **The lock expired under a running check.** `timeout_s` is at most 30 s, but a
+  connect and a first read that each take almost that long add up to twice it.
+  Rather than trust an estimate, Celery kills a `run_check` at 75 s and the lock
+  lives 90 s. A check can no longer outlive its lock.
+- **A deleted a lock that was no longer its own.** The key's value is now a random
+  token, and release is a Lua script that deletes the key only if it still holds
+  that token. A script runs as one step in Redis; "read, compare, delete" as
+  separate commands would leave a gap for the key to expire and be retaken.
+
+`tests/monitors/test_locks.py` replays the four steps against a real Redis.
+
+The long TTL has a price: a worker that dies mid-check leaves its lock behind,
+and that monitor is not checked until the lock expires. An orderly stop avoids
+it, because the worker's `stop_grace_period` (80 s) lets running checks finish.
+
+### After the fix
+
+Three workers, the same slow monitor, ten minutes: both queries return no rows.
+31 checks, each 20 s after the last; 35 queued checks were skipped because the
+monitor was still being checked. Stopping the workers for 38 s and starting them
+again: no rows either, and one check where there had been six.
+
+## Status page
+
+`GET /status` is public: no login. For each monitor it returns `state` (`down`
+while an incident is open, otherwise `up`), `uptime_percent` and `p95_latency_ms`
+over the last 90 days, and its three latest incidents. It never returns a
+monitor's URL.
+
+```bash
+curl -s localhost:8100/status | python -m json.tool
+```
+
+The page takes four queries whatever the number of monitors, and one of them
+aggregates 90 days of checks. So it is cached in Redis under `status:page` for
+`PULSE_STATUS_CACHE_SECONDS` (default 15): a request returns the cached page if
+there is one, otherwise builds it, stores it and returns it. When an incident
+opens or resolves the key is deleted, so the next visitor sees the change at
+once instead of up to 15 s later. Options and trade-offs:
+[ADR 0009](docs/adr/0009-status-page-cache.md).
+
+```bash
+docker compose exec redis redis-cli -n 1 ttl :1:status:page   # Django prefixes keys with ":1:"
+```
+
+### Benchmark
+
+10 monitors, 500,000 seeded checks, 60 incidents. gunicorn with 2 workers,
+`DJANGO_DEBUG=false`. 2000 requests from 50 concurrent keep-alive clients, the
+shape of `hey -n 2000 -c 50 http://localhost:8100/status`, sent by a small httpx
+script. "Without cache" is `PULSE_STATUS_CACHE_SECONDS=0`; "with cache" starts
+from an empty cache, so it includes the first misses.
+
+|                         | p50      | p95       | p99       | throughput |
+| ----------------------- | -------- | --------- | --------- | ---------- |
+| without cache           | 9,192 ms | 10,505 ms | 11,828 ms | 6 req/s    |
+| with cache (15 s)       | 50 ms    | 92 ms     | 579 ms    | 718 req/s  |
+
+One client at a time, no queueing: 425 ms (p50) and 504 ms (p95) without the
+cache, 2.7 ms and 4.2 ms with it.
+
+Without the cache every request runs the 0.4 s aggregate and two workers serve
+50 clients, so most of the nine seconds is waiting in line. With it, almost every
+request is one Redis read. The cached p99 is the stampede: the first 50 requests
+all missed and all built the page.
+
 ## flaky: a target you control
 
 `flaky` is a tiny FastAPI app in `flaky/` that Pulse can monitor at
@@ -433,7 +606,7 @@ curl -X POST localhost:8200/mode -H 'Content-Type: application/json' -d '{"mode"
 | ------ | --------------------------- | --------------------------------------------------------------------------------------- |
 | `ok`   | 200                         | `ok: true`                                                                              |
 | `500`  | 500                         | `wrong_status`                                                                          |
-| `slow` | waits 10 s, then 200        | `timeout` (with `timeout_s` < 10)                                                       |
+| `slow` | waits 10 s, then 200 (`"slow_seconds": 14` in the body changes the wait) | `timeout` (with `timeout_s` below the wait)              |
 | down   | `docker compose stop flaky` | `dns`: a stopped container disappears from Docker's DNS, so the name no longer resolves |
 
 `down` is deliberately not a mode: a crashed service doesn't answer politely, so
@@ -535,6 +708,8 @@ All settings come from environment variables in `.env` (never committed).
 | `PULSE_WEBHOOK_SECRET` | Shared with the catcher; alerts are HMAC-signed with it. Required.    |
 | `PULSE_ALERT_MAX_ATTEMPTS` | Delivery attempts per alert before it is marked failed. 1–10, default `5`. |
 | `PULSE_WEBHOOK_TIMEOUT_S` | Seconds one delivery attempt may take. 1–30, default `5`. |
+| `PULSE_REDIS_URL`      | Redis for the cache and the check locks. Defaults to `redis://redis:6379/1`, a different database from the broker's. |
+| `PULSE_STATUS_CACHE_SECONDS` | Seconds `/status` is served from the cache. 0–300, default `15`; `0` turns the cache off. |
 
 Parsing is done by the typed readers in `config/env.py` (`env_str`, `env_bool`,
 `env_int`, `env_list`): a blank value counts as unset, a boolean accepts only
@@ -592,7 +767,7 @@ database host as the app. `pytest-django` creates a separate `test_pulse` databa
 and wraps each test in a transaction that is rolled back, so tests never touch
 development data and always start empty.
 
-Four kinds of tests, fastest first:
+The kinds of tests, fastest first:
 
 | Where                                                                | What                                                                        | Needs             |
 | -------------------------------------------------------------------- | --------------------------------------------------------------------------- | ----------------- |
@@ -600,7 +775,9 @@ Four kinds of tests, fastest first:
 | `tests/monitors/test_incidents_properties.py`                        | Hypothesis: random up/down sequences through `decide()`, four invariants    | nothing           |
 | `tests/monitors/test_checks.py`                                      | `probe()` against `httpx.MockTransport`: every `error_type`, no network     | nothing           |
 | `tests/monitors/test_clients.py`                                     | the two shared httpx clients against a loopback server that counts connections | nothing        |
-| `tests/monitors/test_api.py`, `test_incident_flow.py`, `tests/core/` | the full stack through DRF's `APIClient`                                    | the test database |
+| `tests/monitors/test_api.py`, `test_incident_flow.py`, `test_status_page.py`, `tests/core/` | the full stack through DRF's `APIClient`             | the test database |
+| `tests/monitors/test_claim.py`                                       | claiming due monitors, including a second connection that must not wait      | the test database |
+| `tests/monitors/test_locks.py`, `test_tasks.py`                      | the check lock against a real Redis (database 15, emptied around each test)  | Redis             |
 
 Two things are injectable so tests can control them: `probe(monitor, client=...)`
 takes an httpx client (tests pass a fake transport; production passes nothing and
