@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from config.celery import app
 from monitors import tasks
-from monitors.models import Check, Monitor
+from monitors.models import MAX_TIMEOUT_S, Check, Monitor
 from tests.conftest import MONITOR_PAYLOAD
 
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("redis_db")]
@@ -70,12 +70,14 @@ def test_run_check_for_a_deleted_monitor_does_nothing(fake_check):
 def test_run_check_skips_a_monitor_another_worker_is_checking(
     monitor, fake_check, redis_db
 ):
-    redis_db.set(f"lock:monitor:{monitor.pk}", "locked")
+    key = f"lock:monitor:{monitor.pk}"
+    redis_db.set(key, "the other worker's token")
 
     tasks.run_check(monitor.pk)
 
     assert fake_check.calls == []
     assert not Check.objects.exists()
+    assert redis_db.get(key) == b"the other worker's token"
 
 
 def test_run_check_frees_the_lock_when_it_finishes(monitor, fake_check, redis_db):
@@ -98,6 +100,28 @@ def test_run_check_frees_the_lock_when_the_check_blows_up(
         tasks.run_check(monitor.pk)
 
     assert redis_db.keys("lock:*") == []
+
+
+def test_run_check_leaves_a_lock_it_no_longer_owns(
+    monitor, monkeypatch, redis_db, caplog
+):
+    key = f"lock:monitor:{monitor.pk}"
+
+    def lock_expires_and_is_retaken(monitor_id):
+        redis_db.set(key, "the next worker's token")
+
+    monkeypatch.setattr(tasks, "_check", lock_expires_and_is_retaken)
+
+    with caplog.at_level("WARNING"):
+        tasks.run_check(monitor.pk)
+
+    assert redis_db.get(key) == b"the next worker's token"
+    assert "lock expired before the check finished" in caplog.text
+
+
+def test_the_lock_outlives_the_longest_a_check_can_run():
+    assert tasks.run_check.time_limit == tasks.CHECK_TIME_LIMIT_S
+    assert tasks.CHECK_LOCK_TTL_S > tasks.CHECK_TIME_LIMIT_S > 2 * MAX_TIMEOUT_S
 
 
 def test_a_checked_monitor_is_not_due_again_until_its_interval(
