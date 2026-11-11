@@ -1,3 +1,4 @@
+import json
 import socket
 import time
 from typing import TypedDict
@@ -30,7 +31,7 @@ def probe(monitor: Monitor, client: httpx.Client | None = None) -> CheckResult:
         client = clients.probe_client()
     started = time.perf_counter()
     try:
-        response = _send(client, monitor)
+        status_code, body = _fetch(client, monitor, started + monitor.timeout_s)
     except httpx.HTTPError as exc:
         return {
             "ok": False,
@@ -43,36 +44,53 @@ def probe(monitor: Monitor, client: httpx.Client | None = None) -> CheckResult:
         # Deep health checks answer 500 when any component fails; the status code
         # would mark the service down for things we don't care about. Judge the
         # body by the asserted keys only.
-        ok = _assertions_hold(response, monitor.assertions)
+        ok = _assertions_hold(body, monitor.assertions)
         error_type = None if ok else "assertion_failed"
     else:
-        ok = response.status_code == monitor.expected_status
+        ok = status_code == monitor.expected_status
         error_type = None if ok else "wrong_status"
     return {
         "ok": ok,
-        "status_code": response.status_code,
+        "status_code": status_code,
         "latency_ms": _elapsed_ms(started),
         "error_type": error_type,
     }
 
 
-def _send(client: httpx.Client, monitor: Monitor) -> httpx.Response:
+def _fetch(
+    client: httpx.Client, monitor: Monitor, deadline: float
+) -> tuple[int, bytes]:
+    """Send the request and read the whole answer: (status code, body).
+
+    httpx's timeout limits each wait for the next bytes, not the request as a whole,
+    so a target that keeps sending a little never trips it. The deadline does:
+    past it, the check stops reading and counts as a timeout.
+    """
     # django-health-check and friends only return JSON when asked for it.
     headers = {"Accept": "application/json"} if monitor.assertions else None
-    return client.request(
+    with client.stream(
         monitor.method, monitor.url, timeout=monitor.timeout_s, headers=headers
-    )
+    ) as response:
+        chunks = []
+        for chunk in response.iter_bytes():
+            chunks.append(chunk)
+            if time.perf_counter() > deadline:
+                raise httpx.ReadTimeout(
+                    "the response took longer than timeout_s in total",
+                    request=response.request,
+                )
+        return response.status_code, b"".join(chunks)
 
 
-def _assertions_hold(response: httpx.Response, assertions: dict[str, str]) -> bool:
+def _assertions_hold(body: bytes, assertions: dict[str, str]) -> bool:
     """True if the body is a JSON object with every asserted key at its expected value."""
     try:
-        body = response.json()
+        parsed = json.loads(body)
     except ValueError:
         return False
-    if not isinstance(body, dict):
+    if not isinstance(parsed, dict):
         return False
-    return all(body.get(key) == expected for key, expected in assertions.items())
+    return all(parsed.get(key) == expected for key, expected in assertions.items())
 
 
 def _elapsed_ms(started: float) -> int:

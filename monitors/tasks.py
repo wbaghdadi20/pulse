@@ -18,9 +18,10 @@ from .models import MAX_TIMEOUT_S, Alert, Monitor
 
 log = get_task_logger(__name__)
 
-# httpx applies timeout_s to each phase, so connecting and then waiting for the
-# answer can take it twice over. Celery kills a check at the limit, and the lock
-# outlives the limit, so a lock can never expire under a check that is still running.
+# probe gives up once timeout_s has passed in total, but only between reads: a
+# connect and a first read that each take almost timeout_s add up to twice that.
+# Celery kills anything slower, and the lock outlives the kill, so a lock can
+# never expire under a check that is still running.
 CHECK_TIME_LIMIT_S = 2 * MAX_TIMEOUT_S + 15
 CHECK_LOCK_TTL_S = CHECK_TIME_LIMIT_S + 15
 

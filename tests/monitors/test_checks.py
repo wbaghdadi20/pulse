@@ -131,6 +131,35 @@ def test_sends_the_monitors_timeout():
     assert seen["timeout"] == {"connect": 7, "read": 7, "write": 7, "pool": 7}
 
 
+def dripping(pause_s: float, chunks: int | None = None):
+    """A response body that arrives one byte at a time, forever unless told otherwise."""
+    sent = 0
+    while chunks is None or sent < chunks:
+        time.sleep(pause_s)
+        sent += 1
+        yield b"."
+
+
+def test_a_response_that_keeps_trickling_past_the_timeout_is_a_timeout():
+    """Never silent for long enough to trip httpx's own timeout, and never finished."""
+    client = fake_client(lambda request: httpx.Response(200, content=dripping(0.2)))
+
+    result = probe(make_monitor(timeout_s=1), client)
+
+    assert result["ok"] is False
+    assert result["error_type"] == "timeout"
+    assert result["status_code"] is None
+    assert 1000 <= result["latency_ms"] < 1500
+
+
+def test_a_slow_response_that_finishes_within_the_timeout_is_fine():
+    client = fake_client(
+        lambda request: httpx.Response(200, content=dripping(0.02, chunks=3))
+    )
+
+    assert probe(make_monitor(timeout_s=1), client)["ok"] is True
+
+
 def test_latency_is_measured_in_milliseconds():
     def slow(request):
         time.sleep(0.02)
