@@ -17,6 +17,8 @@ from django.core.checks import Error, register
 MAX_THRESHOLD = 10
 # Ten doubling delays is ~17 minutes of retrying; an alert older than that is stale.
 MAX_ALERT_ATTEMPTS = 10
+# A status page that can be five minutes behind an outage has stopped being one.
+MAX_STATUS_CACHE_SECONDS = 300
 
 
 @register()
@@ -38,6 +40,13 @@ def check_bounded_settings(
         MAX_ALERT_ATTEMPTS,
         id="pulse.E002",
         hint="Set it in .env. Delays double per attempt, so 10 attempts already span ~17 minutes.",
+    )
+    errors += _in_range(
+        "PULSE_STATUS_CACHE_SECONDS",
+        0,
+        MAX_STATUS_CACHE_SECONDS,
+        id="pulse.E003",
+        hint="Set it in .env. 0 turns the status page cache off.",
     )
     return errors
 

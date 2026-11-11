@@ -160,9 +160,18 @@ PULSE_WEBHOOK_URL = env_str("PULSE_WEBHOOK_URL", default="http://catcher:8000/we
 PULSE_WEBHOOK_SECRET = env_str("PULSE_WEBHOOK_SECRET")
 PULSE_ALERT_MAX_ATTEMPTS = env_int("PULSE_ALERT_MAX_ATTEMPTS", default=5)
 
-# Redis, second use: locks (and the cache). Database 1: the broker's queue is in
+# Redis, second use: locks and the cache. Database 1: the broker's queue is in
 # database 0, and emptying a cache must never be able to drop queued tasks.
 PULSE_REDIS_URL = env_str("PULSE_REDIS_URL", default="redis://redis:6379/1")
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": PULSE_REDIS_URL,
+    }
+}
+# How long /status is served from the cache. 0 turns the cache off.
+PULSE_STATUS_CACHE_SECONDS = env_int("PULSE_STATUS_CACHE_SECONDS", default=15)
 
 CELERY_BEAT_SCHEDULE = {
     "enqueue-due-checks": {

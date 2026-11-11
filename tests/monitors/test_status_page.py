@@ -144,3 +144,52 @@ def test_building_the_page_takes_four_queries_whatever_the_number_of_monitors(
         page = status_page.build_status_page()
 
     assert len(page["monitors"]) == monitors
+
+
+# --- the cache ----------------------------------------------------------------------
+
+
+def test_a_second_request_is_served_from_the_cache(
+    api, monitor, django_assert_num_queries
+):
+    first = api.get("/status").json()
+
+    with django_assert_num_queries(0):
+        second = api.get("/status").json()
+
+    assert second == first
+
+
+class EmptyCache:
+    """Always a miss; remembers what it was asked to keep and for how long."""
+
+    def __init__(self) -> None:
+        self.kept: list[tuple[str, int]] = []
+
+    def get(self, key: str) -> None:
+        return None
+
+    def set(self, key: str, value: object, timeout: int) -> None:
+        self.kept.append((key, timeout))
+
+
+def test_the_page_is_kept_for_the_configured_seconds(
+    api, monitor, settings, monkeypatch
+):
+    settings.PULSE_STATUS_CACHE_SECONDS = 7
+    cache = EmptyCache()
+    monkeypatch.setattr(status_page, "cache", cache)
+
+    api.get("/status")
+
+    assert cache.kept == [("status:page", 7)]
+
+
+def test_zero_seconds_turns_the_cache_off(
+    api, monitor, settings, django_assert_num_queries
+):
+    settings.PULSE_STATUS_CACHE_SECONDS = 0
+    api.get("/status")
+
+    with django_assert_num_queries(4):
+        api.get("/status")

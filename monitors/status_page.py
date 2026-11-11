@@ -1,9 +1,14 @@
-"""The public status page: each monitor's state, 90-day uptime and latest incidents."""
+"""The public status page: each monitor's state, 90-day uptime and latest incidents.
+
+Why it is cached this way: docs/adr/0009-status-page-cache.md
+"""
 
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any
 
+from django.conf import settings
+from django.core.cache import cache
 from django.db.models import F, QuerySet, Window
 from django.db.models.functions import RowNumber
 from django.utils import timezone
@@ -13,6 +18,16 @@ from .models import Check, Incident, Monitor
 
 WINDOW_DAYS = 90
 RECENT_INCIDENTS = 3
+CACHE_KEY = "status:page"
+
+
+def get_status_page() -> dict[str, Any]:
+    """Cache-aside: the cached page if there is one, else build it and keep it a while."""
+    page: dict[str, Any] | None = cache.get(CACHE_KEY)
+    if page is None:
+        page = build_status_page()
+        cache.set(CACHE_KEY, page, settings.PULSE_STATUS_CACHE_SECONDS)
+    return page
 
 
 def build_status_page(now: datetime | None = None) -> dict[str, Any]:

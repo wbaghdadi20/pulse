@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 import httpx
 import pytest
 import redis
+from django.core.cache import cache
 from hypothesis import settings as hypothesis_settings
 from rest_framework.test import APIClient
 
@@ -44,6 +45,15 @@ def api() -> APIClient:
 def monitor(db) -> Monitor:
     """One saved monitor. Depending on `db` opts this fixture into the database."""
     return Monitor.objects.create(**MONITOR_PAYLOAD)
+
+
+@pytest.fixture(autouse=True)
+def local_cache(settings) -> None:
+    """Every test starts with an empty in-process cache instead of the dev Redis."""
+    settings.CACHES = {
+        "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}
+    }
+    cache.clear()
 
 
 @pytest.fixture

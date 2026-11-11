@@ -87,4 +87,4 @@ class StatusPageView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request: Request) -> Response:
-        return Response(status_page.build_status_page())
+        return Response(status_page.get_status_page())
