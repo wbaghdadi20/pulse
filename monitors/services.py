@@ -10,7 +10,7 @@ from typing import Any
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import QuerySet
+from django.db.models import DateTimeField, ExpressionWrapper, F, QuerySet, Value
 from django.utils import timezone
 
 from core.db import violated_constraint
@@ -48,6 +48,30 @@ def update_monitor(monitor: Monitor, changes: dict[str, Any]) -> Monitor:
 
 def delete_monitor(monitor: Monitor) -> None:
     monitor.delete()  # its checks and incidents go too (on_delete=CASCADE)
+
+
+def claim_due_monitors(now: datetime | None = None) -> list[tuple[int, int]]:
+    """(id, interval_s) of every monitor that is due, each claimed for this caller.
+
+    Claiming moves next_check_at one interval ahead in the same transaction that
+    found the monitor due, so it is handed out once per interval however many
+    callers ask. Rows another caller is claiming right now are skipped, not waited for.
+    """
+    now = now or timezone.now()
+    next_slot = ExpressionWrapper(
+        Value(now) + F("interval_s") * timedelta(seconds=1),
+        output_field=DateTimeField(),
+    )
+    with transaction.atomic():
+        due = list(
+            Monitor.objects.select_for_update(skip_locked=True)
+            .filter(next_check_at__lte=now)
+            .values_list("id", "interval_s")
+        )
+        Monitor.objects.filter(pk__in=[pk for pk, _ in due]).update(
+            next_check_at=next_slot
+        )
+    return due
 
 
 def check_monitor(monitor: Monitor) -> CheckResult:

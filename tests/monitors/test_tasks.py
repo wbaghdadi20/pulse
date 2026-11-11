@@ -1,11 +1,12 @@
 """The scheduled path: beat -> enqueue_due_checks -> run_check -> the "check now" service.
 
 A Celery task object called like a function runs its body in-process, so the tasks
-are called directly. run_check.delay is replaced with a recorder, so nothing is
-queued; the check lock is real, on the test Redis database (see `redis_db`).
+are called directly. run_check.apply_async is replaced with a recorder, so nothing
+is queued; the check lock is real, on the test Redis database (see `redis_db`).
 """
 
 from datetime import datetime, timedelta
+from typing import Any
 
 import pytest
 from django.conf import settings
@@ -20,37 +21,62 @@ pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("redis_db")]
 
 
 def make_monitor(
-    name: str, *, interval_s: int = 30, last_checked_at: datetime | None = None
+    name: str, *, interval_s: int = 30, next_check_at: datetime | None = None
 ) -> Monitor:
     fields = {**MONITOR_PAYLOAD, "name": name, "interval_s": interval_s}
-    return Monitor.objects.create(last_checked_at=last_checked_at, **fields)
+    if next_check_at is not None:
+        fields["next_check_at"] = next_check_at
+    return Monitor.objects.create(**fields)
 
 
 @pytest.fixture
-def queued(monkeypatch) -> list[int]:
-    """The monitor ids run_check.delay was called with, instead of queueing them."""
-    ids: list[int] = []
-    monkeypatch.setattr(tasks.run_check, "delay", ids.append)
-    return ids
-
-
-def test_enqueue_queues_never_checked_and_overdue_monitors_only(queued):
-    now = timezone.now()
-    never = make_monitor("never")
-    make_monitor("fresh", interval_s=30, last_checked_at=now - timedelta(seconds=5))
-    overdue = make_monitor(
-        "overdue", interval_s=30, last_checked_at=now - timedelta(seconds=31)
+def queued(monkeypatch) -> list[dict[str, Any]]:
+    """What run_check.apply_async was called with, instead of queueing it."""
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        tasks.run_check, "apply_async", lambda **kwargs: calls.append(kwargs)
     )
+    return calls
+
+
+def queued_ids(queued: list[dict[str, Any]]) -> list[int]:
+    return sorted(call["args"][0] for call in queued)
+
+
+def test_enqueue_queues_new_and_due_monitors_only(queued):
+    now = timezone.now()
+    new = make_monitor("new")
+    make_monitor("later", next_check_at=now + timedelta(seconds=5))
+    due = make_monitor("due", next_check_at=now - timedelta(seconds=1))
 
     assert tasks.enqueue_due_checks() == 2
-    assert sorted(queued) == sorted([never.pk, overdue.pk])
+    assert queued_ids(queued) == sorted([new.pk, due.pk])
 
 
 def test_enqueue_with_nothing_due_queues_nothing(queued):
-    make_monitor("fresh", last_checked_at=timezone.now())
+    make_monitor("later", next_check_at=timezone.now() + timedelta(seconds=5))
 
     assert tasks.enqueue_due_checks() == 0
     assert queued == []
+
+
+def test_a_queued_check_expires_after_its_interval(queued):
+    make_monitor("m", interval_s=45)
+
+    tasks.enqueue_due_checks()
+
+    assert [call["expires"] for call in queued] == [45]
+
+
+def test_a_monitor_is_queued_once_per_interval_even_if_its_check_never_finishes(
+    monitor, queued
+):
+    """The duplicate-check bug: "due" used to last until the check had finished."""
+    assert tasks.enqueue_due_checks() == 1
+
+    assert tasks.enqueue_due_checks() == 0
+    assert tasks.enqueue_due_checks() == 0
+    assert len(queued) == 1
 
 
 def test_run_check_records_the_check_and_stamps_the_monitor(monitor, fake_check):
@@ -122,15 +148,6 @@ def test_run_check_leaves_a_lock_it_no_longer_owns(
 def test_the_lock_outlives_the_longest_a_check_can_run():
     assert tasks.run_check.time_limit == tasks.CHECK_TIME_LIMIT_S
     assert tasks.CHECK_LOCK_TTL_S > tasks.CHECK_TIME_LIMIT_S > 2 * MAX_TIMEOUT_S
-
-
-def test_a_checked_monitor_is_not_due_again_until_its_interval(
-    monitor, fake_check, queued
-):
-    assert tasks.enqueue_due_checks() == 1
-    tasks.run_check(monitor.pk)
-
-    assert tasks.enqueue_due_checks() == 0
 
 
 def test_beat_schedule_names_registered_tasks():
