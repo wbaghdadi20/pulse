@@ -5,13 +5,14 @@ Domain errors raised by services (MonitorNotFound, MonitorNameTaken) become
 """
 
 from rest_framework import status
+from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.pagination import DefaultPagination
 
-from . import services
+from . import services, status_page
 from .serializers import IncidentSerializer, MonitorSerializer, UptimeQuerySerializer
 
 
@@ -77,3 +78,13 @@ class MonitorIncidentListView(APIView):
         return Response(
             IncidentSerializer(incident).data, status=status.HTTP_201_CREATED
         )
+
+
+class StatusPageView(APIView):
+    """/status : public. No login, whatever the API's defaults become."""
+
+    authentication_classes: list[type] = []
+    permission_classes = [AllowAny]
+
+    def get(self, request: Request) -> Response:
+        return Response(status_page.build_status_page())
