@@ -10,7 +10,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.pagination import DefaultPagination
+from core.pagination import AfterIdPagination, DefaultPagination
 
 from . import services, status_page
 from .serializers import IncidentSerializer, MonitorSerializer, UptimeQuerySerializer
@@ -20,7 +20,11 @@ class MonitorListView(APIView):
     """/monitors/ : the collection."""
 
     def get(self, request: Request) -> Response:
-        paginator = DefaultPagination()
+        paginator: AfterIdPagination | DefaultPagination = (
+            AfterIdPagination()
+            if "after" in request.query_params
+            else DefaultPagination()
+        )
         page = paginator.paginate_queryset(services.list_monitors(), request, view=self)
         return paginator.get_paginated_response(MonitorSerializer(page, many=True).data)
 
