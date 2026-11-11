@@ -6,13 +6,17 @@ rolled back afterwards, so each test starts from empty tables.
 """
 
 import os
+from collections.abc import Iterator
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
+import redis
 from hypothesis import settings as hypothesis_settings
 from rest_framework.test import APIClient
 
+from monitors import clients
 from monitors.models import Monitor
 
 # Property tests: a fast everyday profile, a thorough one for CI.
@@ -40,6 +44,22 @@ def api() -> APIClient:
 def monitor(db) -> Monitor:
     """One saved monitor. Depending on `db` opts this fixture into the database."""
     return Monitor.objects.create(**MONITOR_PAYLOAD)
+
+
+@pytest.fixture
+def redis_db(monkeypatch: pytest.MonkeyPatch, settings) -> Iterator[redis.Redis]:
+    """A real Redis, on database 15, emptied before and after each test.
+
+    Locks are only as correct as Redis makes them, so they are tested against it.
+    Database 15 keeps the tests away from the dev stack's queue (0) and locks (1).
+    """
+    url = urlsplit(settings.PULSE_REDIS_URL)._replace(path="/15").geturl()
+    client = redis.Redis.from_url(url)
+    client.flushdb()
+    monkeypatch.setattr(clients, "redis_client", lambda: client)
+    yield client
+    client.flushdb()
+    client.close()
 
 
 class FakeCheck:

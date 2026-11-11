@@ -1,8 +1,8 @@
 """The scheduled path: beat -> enqueue_due_checks -> run_check -> the "check now" service.
 
 A Celery task object called like a function runs its body in-process, so the tasks
-are called directly. run_check.delay is replaced with a recorder: nothing here
-touches Redis.
+are called directly. run_check.delay is replaced with a recorder, so nothing is
+queued; the check lock is real, on the test Redis database (see `redis_db`).
 """
 
 from datetime import datetime, timedelta
@@ -16,7 +16,7 @@ from monitors import tasks
 from monitors.models import Check, Monitor
 from tests.conftest import MONITOR_PAYLOAD
 
-pytestmark = pytest.mark.django_db
+pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("redis_db")]
 
 
 def make_monitor(
@@ -65,6 +65,39 @@ def test_run_check_for_a_deleted_monitor_does_nothing(fake_check):
     tasks.run_check(999_999)  # the row is gone, the message is stale: not an error
 
     assert not Check.objects.exists()
+
+
+def test_run_check_skips_a_monitor_another_worker_is_checking(
+    monitor, fake_check, redis_db
+):
+    redis_db.set(f"lock:monitor:{monitor.pk}", "locked")
+
+    tasks.run_check(monitor.pk)
+
+    assert fake_check.calls == []
+    assert not Check.objects.exists()
+
+
+def test_run_check_frees_the_lock_when_it_finishes(monitor, fake_check, redis_db):
+    tasks.run_check(monitor.pk)
+    tasks.run_check(monitor.pk)
+
+    assert len(fake_check.calls) == 2
+    assert redis_db.keys("lock:*") == []
+
+
+def test_run_check_frees_the_lock_when_the_check_blows_up(
+    monitor, monkeypatch, redis_db
+):
+    def boom(monitor):
+        raise RuntimeError("database gone")
+
+    monkeypatch.setattr("monitors.services.check_monitor", boom)
+
+    with pytest.raises(RuntimeError):
+        tasks.run_check(monitor.pk)
+
+    assert redis_db.keys("lock:*") == []
 
 
 def test_a_checked_monitor_is_not_due_again_until_its_interval(
