@@ -9,6 +9,7 @@ from typing import Any
 
 from django.conf import settings
 from django.core.cache import cache
+from django.db import transaction
 from django.db.models import F, QuerySet, Window
 from django.db.models.functions import RowNumber
 from django.utils import timezone
@@ -28,6 +29,15 @@ def get_status_page() -> dict[str, Any]:
         page = build_status_page()
         cache.set(CACHE_KEY, page, settings.PULSE_STATUS_CACHE_SECONDS)
     return page
+
+
+def invalidate() -> None:
+    """Drop the cached page once the current transaction has committed.
+
+    Not before: a request arriving in between would rebuild the page from the old
+    rows and cache that for a full TTL.
+    """
+    transaction.on_commit(lambda: cache.delete(CACHE_KEY))
 
 
 def build_status_page(now: datetime | None = None) -> dict[str, Any]:

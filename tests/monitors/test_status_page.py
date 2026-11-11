@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from django.utils import timezone
 
-from monitors import status_page
+from monitors import services, status_page, tasks
 from monitors.models import Check, Incident, Monitor
 from tests.conftest import MONITOR_PAYLOAD
 
@@ -193,3 +193,50 @@ def test_zero_seconds_turns_the_cache_off(
 
     with django_assert_num_queries(4):
         api.get("/status")
+
+
+# --- no stale page ------------------------------------------------------------------
+
+
+@pytest.fixture
+def no_alerts(monkeypatch) -> None:
+    """Committing an incident queues its alert; these tests are not about that."""
+    monkeypatch.setattr(tasks.send_alert, "delay", lambda alert_id: None)
+
+
+def test_an_incident_that_opens_shows_on_the_next_request(
+    api, monitor, no_alerts, django_capture_on_commit_callbacks
+):
+    assert page_entry(api, monitor.name)["state"] == "up"  # and now it is cached
+
+    with django_capture_on_commit_callbacks(execute=True):
+        services.open_incident_for(monitor, cause="3 failed checks in a row")
+
+    entry = page_entry(api, monitor.name)
+    assert entry["state"] == "down"
+    assert [i["cause"] for i in entry["incidents"]] == ["3 failed checks in a row"]
+
+
+def test_an_incident_that_resolves_shows_on_the_next_request(
+    api, monitor, no_alerts, django_capture_on_commit_callbacks
+):
+    incident = Incident.objects.create(monitor=monitor)
+    assert page_entry(api, monitor.name)["state"] == "down"
+
+    with django_capture_on_commit_callbacks(execute=True):
+        services.resolve_incident(incident)
+
+    entry = page_entry(api, monitor.name)
+    assert entry["state"] == "up"
+    assert entry["incidents"][0]["resolved_at"] is not None
+
+
+def test_the_cached_page_is_dropped_at_commit_not_before(
+    api, monitor, django_capture_on_commit_callbacks
+):
+    cached = api.get("/status").json()
+
+    with django_capture_on_commit_callbacks(execute=False):
+        services.open_incident_for(monitor)
+
+        assert api.get("/status").json() == cached
