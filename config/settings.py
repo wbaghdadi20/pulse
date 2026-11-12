@@ -145,6 +145,9 @@ MAILERS = {
 
 REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "core.exception_handler.exception_handler",
+    # Closed by default: a view is public only by subclassing core.views.PublicAPIView.
+    "DEFAULT_AUTHENTICATION_CLASSES": ["accounts.authentication.JWTAuthentication"],
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
 }
 
 # Signs the access tokens /login hands out. Not DJANGO_SECRET_KEY: rotating one

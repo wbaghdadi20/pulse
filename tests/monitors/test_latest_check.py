@@ -97,13 +97,13 @@ def test_check_now_becomes_the_latest_check(api, monitor, fake_check):
 
 
 @pytest.mark.parametrize("count", [1, 5])
-def test_listing_monitors_takes_two_queries_however_many_there_are(
+def test_listing_monitors_takes_three_queries_however_many_there_are(
     api, db, django_assert_num_queries, count
 ):
-    """No N+1: COUNT, then one query for the page with every latest check in it."""
+    """No N+1: the token's user, COUNT, then one query for the page with every latest check in it."""
     make_monitors(count)
 
-    with django_assert_num_queries(2):
+    with django_assert_num_queries(3):
         rows = api.get("/monitors/").json()["results"]
 
     assert [row["latest_check"]["ok"] for row in rows] == [False] * count
