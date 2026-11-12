@@ -143,11 +143,23 @@ MAILERS = {
 # Django REST framework
 # https://www.django-rest-framework.org/api-guide/settings/
 
+# Requests per minute from one client address: everywhere, and on /login and /signup.
+PULSE_RATE_LIMIT_PER_MINUTE = env_int("PULSE_RATE_LIMIT_PER_MINUTE", default=60)
+PULSE_AUTH_RATE_LIMIT_PER_MINUTE = env_int(
+    "PULSE_AUTH_RATE_LIMIT_PER_MINUTE", default=5
+)
+# How many proxies in front of Pulse add to X-Forwarded-For. 0: the header is
+# ignored and the connection's own address identifies the client. DRF's default
+# believes the header, which lets a client pick a new identity per request.
+PULSE_NUM_PROXIES = env_int("PULSE_NUM_PROXIES", default=0)
+
 REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "core.exception_handler.exception_handler",
     # Closed by default: a view is public only by subclassing core.views.PublicAPIView.
     "DEFAULT_AUTHENTICATION_CLASSES": ["accounts.authentication.JWTAuthentication"],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    "DEFAULT_THROTTLE_CLASSES": ["core.throttling.RateLimitThrottle"],
+    "NUM_PROXIES": PULSE_NUM_PROXIES,
 }
 
 # Signs the access tokens /login hands out. Not DJANGO_SECRET_KEY: rotating one

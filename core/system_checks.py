@@ -26,6 +26,12 @@ MIN_JWT_TTL_SECONDS = 60
 MAX_JWT_TTL_SECONDS = 86_400
 # HS256 needs a key at least as long as its 256-bit output (RFC 7518, section 3.2).
 MIN_JWT_SECRET_LENGTH = 32
+# 100 requests a second from one client is no longer a limit.
+MAX_RATE_LIMIT_PER_MINUTE = 6000
+# One password guess a second: above that the limit has stopped slowing guessing down.
+MAX_AUTH_RATE_LIMIT_PER_MINUTE = 60
+# Each trusted proxy is one more X-Forwarded-For entry believed; none is the safe default.
+MAX_NUM_PROXIES = 5
 
 
 @register()
@@ -77,6 +83,27 @@ def check_bounded_settings(
                 id="pulse.E006",
             )
         )
+    errors += _in_range(
+        "PULSE_RATE_LIMIT_PER_MINUTE",
+        1,
+        MAX_RATE_LIMIT_PER_MINUTE,
+        id="pulse.E007",
+        hint="Set it in .env. Requests per minute from one client address.",
+    )
+    errors += _in_range(
+        "PULSE_AUTH_RATE_LIMIT_PER_MINUTE",
+        1,
+        MAX_AUTH_RATE_LIMIT_PER_MINUTE,
+        id="pulse.E008",
+        hint="Set it in .env. It is what slows down password guessing on /login.",
+    )
+    errors += _in_range(
+        "PULSE_NUM_PROXIES",
+        0,
+        MAX_NUM_PROXIES,
+        id="pulse.E009",
+        hint="Set it in .env. Count only proxies you run: each is trusted to report the client's address.",
+    )
     return errors
 
 
