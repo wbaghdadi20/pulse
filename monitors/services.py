@@ -77,18 +77,26 @@ def get_monitor(pk: int, owner: User) -> Monitor:
 def create_monitor(owner: User, data: dict[str, Any]) -> Monitor:
     monitor = Monitor(owner=owner, **data)
     _save(monitor)
+    if monitor.is_public:
+        status_page.invalidate()
     return monitor
 
 
 def update_monitor(monitor: Monitor, changes: dict[str, Any]) -> Monitor:
+    was_public = monitor.is_public
     for field, value in changes.items():
         setattr(monitor, field, value)
     _save(monitor, update_fields=list(changes))
+    # A monitor made private must leave the page now, not when the cache expires.
+    if was_public or monitor.is_public:
+        status_page.invalidate()
     return monitor
 
 
 def delete_monitor(monitor: Monitor) -> None:
     monitor.delete()  # its checks and incidents go too (on_delete=CASCADE)
+    if monitor.is_public:
+        status_page.invalidate()
 
 
 def claim_due_monitors(now: datetime | None = None) -> list[tuple[int, int]]:

@@ -1,4 +1,4 @@
-"""The public status page: each monitor's state, 90-day uptime and latest incidents.
+"""The public status page: each public monitor's state, 90-day uptime and latest incidents.
 
 Why it is cached this way: docs/adr/0009-status-page-cache.md
 """
@@ -42,20 +42,21 @@ def invalidate() -> None:
 
 
 def build_status_page(now: datetime | None = None) -> dict[str, Any]:
-    """Four queries, however many monitors there are."""
+    """Four queries, however many monitors there are. Only is_public monitors,
+    whoever owns them: nothing about a private one is read, let alone shown."""
     now = now or timezone.now()
     since = now - timedelta(days=WINDOW_DAYS)
 
     stats = {
         row["monitor_id"]: row
-        for row in Check.objects.filter(checked_at__gt=since)
+        for row in Check.objects.filter(monitor__is_public=True, checked_at__gt=since)
         .values("monitor_id")
         .annotate(**uptime.aggregates())
     }
     down = set(
-        Incident.objects.filter(resolved_at__isnull=True).values_list(
-            "monitor_id", flat=True
-        )
+        Incident.objects.filter(
+            monitor__is_public=True, resolved_at__isnull=True
+        ).values_list("monitor_id", flat=True)
     )
     incidents: defaultdict[int, list[dict[str, Any]]] = defaultdict(list)
     for incident in _recent_incidents():
@@ -78,7 +79,9 @@ def build_status_page(now: datetime | None = None) -> dict[str, Any]:
             **_uptime(stats.get(monitor["id"])),
             "incidents": incidents.get(monitor["id"], []),
         }
-        for monitor in Monitor.objects.order_by("name", "id").values("id", "name")
+        for monitor in Monitor.objects.filter(is_public=True)
+        .order_by("name", "id")
+        .values("id", "name")
     ]
     return {"generated_at": now, "window_days": WINDOW_DAYS, "monitors": monitors}
 
@@ -99,7 +102,8 @@ def _recent_incidents() -> QuerySet[Incident]:
         order_by=[F("opened_at").desc(), F("id").desc()],
     )
     return (
-        Incident.objects.annotate(position=newest_first)
+        Incident.objects.filter(monitor__is_public=True)
+        .annotate(position=newest_first)
         .filter(position__lte=RECENT_INCIDENTS)
         .order_by("monitor_id", "position")
     )

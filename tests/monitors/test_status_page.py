@@ -6,15 +6,22 @@ from typing import Any
 import pytest
 from django.utils import timezone
 
+from accounts.models import User
 from monitors import services, status_page, tasks
 from monitors.models import Check, Incident, Monitor
-from tests.conftest import create_monitor
+from tests.conftest import MONITOR_PAYLOAD, create_monitor
 
 pytestmark = pytest.mark.django_db
 
 
 def make_monitor(name: str) -> Monitor:
-    return create_monitor(name=name)
+    return create_monitor(name=name, is_public=True)
+
+
+@pytest.fixture
+def monitor(db) -> Monitor:
+    """Public, unlike the suite-wide `monitor`: a private one is never on the page."""
+    return create_monitor(is_public=True)
 
 
 def add_check(monitor: Monitor, *, ok: bool, latency_ms: int, age: timedelta) -> None:
@@ -240,3 +247,90 @@ def test_the_cached_page_is_dropped_at_commit_not_before(
         services.open_incident_for(monitor)
 
         assert api.get("/status").json() == cached
+
+
+# --- only public monitors -----------------------------------------------------------
+
+
+def names_on_page(client) -> list[str]:
+    return [entry["name"] for entry in client.get("/status").json()["monitors"]]
+
+
+def test_a_private_monitor_is_not_on_the_page(anon, monitor):
+    private = create_monitor(name="internal-billing")
+    add_check(private, ok=False, latency_ms=10, age=timedelta(hours=1))
+    Incident.objects.create(monitor=private, cause="secret outage")
+
+    assert names_on_page(anon) == [monitor.name]
+    assert "secret outage" not in anon.get("/status").content.decode()
+
+
+def test_a_new_monitor_is_private_until_its_owner_says_otherwise(api, anon):
+    api.post("/monitors/", {**MONITOR_PAYLOAD, "name": "fresh"}, format="json")
+
+    assert names_on_page(anon) == []
+
+
+def test_public_monitors_of_every_owner_are_on_the_page(anon, monitor):
+    someone_else = User.objects.create_user("other@example.com")
+    create_monitor(owner=someone_else, name="theirs", is_public=True)
+
+    assert names_on_page(anon) == [monitor.name, "theirs"]
+
+
+def test_a_monitor_made_private_leaves_the_page_on_the_next_request(
+    api, anon, monitor, django_capture_on_commit_callbacks
+):
+    assert names_on_page(anon) == [monitor.name]  # and now it is cached
+
+    with django_capture_on_commit_callbacks(execute=True):
+        api.patch(f"/monitors/{monitor.pk}/", {"is_public": False}, format="json")
+
+    assert names_on_page(anon) == []
+
+
+def test_a_monitor_made_public_joins_the_page_on_the_next_request(
+    api, anon, django_capture_on_commit_callbacks
+):
+    private = create_monitor(name="going-live")
+    assert names_on_page(anon) == []
+
+    with django_capture_on_commit_callbacks(execute=True):
+        api.patch(f"/monitors/{private.pk}/", {"is_public": True}, format="json")
+
+    assert names_on_page(anon) == ["going-live"]
+
+
+def test_a_deleted_public_monitor_leaves_the_page_on_the_next_request(
+    api, anon, monitor, django_capture_on_commit_callbacks
+):
+    assert names_on_page(anon) == [monitor.name]
+
+    with django_capture_on_commit_callbacks(execute=True):
+        api.delete(f"/monitors/{monitor.pk}/")
+
+    assert names_on_page(anon) == []
+
+
+def test_a_renamed_public_monitor_shows_its_new_name_on_the_next_request(
+    api, anon, monitor, django_capture_on_commit_callbacks
+):
+    assert names_on_page(anon) == [monitor.name]
+
+    with django_capture_on_commit_callbacks(execute=True):
+        api.patch(f"/monitors/{monitor.pk}/", {"name": "renamed"}, format="json")
+
+    assert names_on_page(anon) == ["renamed"]
+
+
+def test_changing_a_private_monitor_leaves_the_cached_page_alone(
+    api, anon, monitor, django_capture_on_commit_callbacks
+):
+    private = create_monitor(name="internal")
+    anon.get("/status")
+
+    with django_capture_on_commit_callbacks(execute=True) as callbacks:
+        api.patch(f"/monitors/{private.pk}/", {"name": "internal-2"}, format="json")
+        api.delete(f"/monitors/{private.pk}/")
+
+    assert callbacks == []
