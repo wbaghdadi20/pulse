@@ -14,6 +14,7 @@ for _name in (
     "POSTGRES_HOST",
     "CELERY_BROKER_URL",
     "PULSE_WEBHOOK_SECRET",
+    "PULSE_JWT_SECRET",
 ):
     os.environ.setdefault(_name, "typecheck")
 
