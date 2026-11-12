@@ -18,7 +18,7 @@ pythonpath = ["."]
 django_find_project = false
 
 [tool.coverage.run]
-source = ["core", "monitors"]
+source = ["accounts", "core", "monitors"]
 omit = ["*/migrations/*", "*/management/*"]
 
 [tool.coverage.report]
@@ -29,7 +29,7 @@ skip_covered = true
 # The incident module alone has no survivors (27/27 killed), so mutate the whole
 # monitors + core source. Thin or declarative modules are left out: models/admin/apps
 # mutants are mostly string changes nobody should write tests for.
-source_paths = ["monitors/", "core/"]
+source_paths = ["monitors/", "core/", "accounts/"]
 do_not_mutate = [
     "*/migrations/*",
     "*/management/*",
@@ -44,7 +44,7 @@ also_copy = ["config/"]
 [tool.ruff.lint.isort]
 # shop/ is a second project in this repo; name its packages so isort groups them
 # as first-party there too (ruff otherwise decides by whether the file exists at the root).
-known-first-party = ["catalog", "config", "core", "monitors", "tests"]
+known-first-party = ["accounts", "catalog", "config", "core", "monitors", "tests"]
 
 [tool.mypy]
 # --strict for the source; see the override below for the tests.
@@ -54,7 +54,7 @@ warn_unreachable = true
 plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
 # Explicit: shop/ and flaky/ are separate apps with their own settings and
 # dependencies, and shop/ reuses the package names config/ and core/.
-files = ["config", "core", "monitors", "tests", "manage.py"]
+files = ["accounts", "config", "core", "monitors", "tests", "manage.py"]
 exclude = ["/migrations/"]
 
 [[tool.mypy.overrides]]
