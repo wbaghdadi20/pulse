@@ -83,3 +83,24 @@ def test_a_short_token_secret_is_reported_without_printing_it(settings):
 def test_a_token_secret_of_32_characters_is_long_enough(settings):
     settings.PULSE_JWT_SECRET = "x" * 32
     assert pulse_errors() == []
+
+
+@pytest.mark.parametrize(
+    "name, error_id, too_low, too_high",
+    [
+        ("PULSE_RATE_LIMIT_PER_MINUTE", "pulse.E007", 0, 6001),
+        ("PULSE_AUTH_RATE_LIMIT_PER_MINUTE", "pulse.E008", 0, 61),
+    ],
+)
+def test_out_of_range_rate_limits_are_reported(
+    settings, name, error_id, too_low, too_high
+):
+    for value in (too_low, too_high):
+        setattr(settings, name, value)
+        assert [e.id for e in pulse_errors()] == [error_id]
+
+
+@pytest.mark.parametrize("value", [-1, 6])
+def test_out_of_range_proxy_count_is_reported(settings, value):
+    settings.PULSE_NUM_PROXIES = value
+    assert [e.id for e in pulse_errors()] == ["pulse.E009"]

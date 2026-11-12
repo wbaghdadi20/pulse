@@ -3,6 +3,7 @@ from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from core.throttling import AuthRateThrottle
 from core.views import PublicAPIView
 
 from . import services
@@ -11,6 +12,8 @@ from .serializers import CredentialsSerializer, SignupSerializer, UserSerializer
 
 
 class SignupView(PublicAPIView):
+    throttle_classes = [AuthRateThrottle]
+
     def post(self, request: Request) -> Response:
         serializer = SignupSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -19,6 +22,8 @@ class SignupView(PublicAPIView):
 
 
 class LoginView(PublicAPIView):
+    throttle_classes = [AuthRateThrottle]
+
     def post(self, request: Request) -> Response:
         serializer = CredentialsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
