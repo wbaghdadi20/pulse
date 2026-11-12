@@ -1,8 +1,10 @@
 """Business logic for monitors.
 
-No HTTP in here: views call these functions today, Celery tasks will from D6.
-Convention: get_monitor() turns an id into a monitor (or raises MonitorNotFound);
-every other function takes the monitor itself.
+No HTTP in here: views and Celery tasks call the same functions.
+Convention: get_monitor() turns an id and its owner into a monitor (or raises
+MonitorNotFound); every other function takes the monitor itself. It is the one
+place a request reaches a monitor through, so it is the one place ownership is
+checked.
 """
 
 from datetime import datetime, timedelta
@@ -34,8 +36,8 @@ from .errors import IncidentAlreadyOpen, MonitorNameTaken, MonitorNotFound
 from .models import Alert, Check, Incident, Monitor
 
 
-def _monitors() -> QuerySet[Monitor]:
-    """Monitors, each with its newest check as `latest_check`, in one query.
+def _monitors(owner: User) -> QuerySet[Monitor]:
+    """This owner's monitors, each with its newest check as `latest_check`, in one query.
 
     A correlated subquery builds the check as a JSON object. With LIMIT 1 over the
     (monitor_id, checked_at) index it reads one index entry per monitor.
@@ -53,17 +55,21 @@ def _monitors() -> QuerySet[Monitor]:
             )
         )[:1]
     )
-    return Monitor.objects.annotate(latest_check=Subquery(newest_check))
+    return Monitor.objects.filter(owner=owner).annotate(
+        latest_check=Subquery(newest_check)
+    )
 
 
-def list_monitors() -> QuerySet[Monitor]:
+def list_monitors(owner: User) -> QuerySet[Monitor]:
     # Lazy: the paginator adds COUNT(*) and LIMIT/OFFSET before anything runs.
-    return _monitors().order_by("id")
+    return _monitors(owner).order_by("id")
 
 
-def get_monitor(pk: int) -> Monitor:
+def get_monitor(pk: int, owner: User) -> Monitor:
+    """Someone else's monitor is "not found", exactly like one that does not exist:
+    a different answer would confirm the id is in use."""
     try:
-        return _monitors().get(pk=pk)
+        return _monitors(owner).get(pk=pk)
     except Monitor.DoesNotExist:
         raise MonitorNotFound(pk) from None
 
