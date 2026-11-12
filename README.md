@@ -373,13 +373,18 @@ beat ──every 10 s──▶ redis ──▶ worker: enqueue_due_checks()
 When an incident opens or resolves, Pulse POSTs a signed JSON webhook to the
 catcher. The design is built around one fact: **a task can run twice** (a retry
 after a timeout where the first attempt did get through, or the same event queued
-twice). Two layers make that harmless:
+twice). Three layers make that harmless:
 
 1. **One row per event.** `alerts` has a unique constraint on `(incident_id, kind)`
    with kind `opened` or `resolved`. Recording the event twice is a no-op at the
    database, so an incident can never produce two "opened" alerts.
 2. **The task checks before sending.** `send_alert(alert_id)` loads the row and
    stops if its status is no longer `pending`. Running it twice sends once.
+3. **The receiver stores each alert once.** When an attempt times out, Pulse cannot
+   tell a request that was lost from an answer that was lost, so it sends again:
+   delivery is at-least-once. Every attempt carries the same `alert_id` inside the
+   signed body, and the catcher answers an id it already stored with 200 without
+   storing it again.
 
 The row is inserted in the same transaction as the incident change, and the task is
 queued with `transaction.on_commit`, so a worker can never pick up a message for a
@@ -405,8 +410,8 @@ is a 401 and nothing is stored.
 Payload, for example:
 
 ```json
-{"event": "incident.resolved", "monitor": "flaky", "monitor_id": 15, "incident_id": 37,
- "incident_kind": "availability", "cause": "3 failed checks in a row",
+{"alert_id": 52, "event": "incident.resolved", "monitor": "flaky", "monitor_id": 15,
+ "incident_id": 37, "incident_kind": "availability", "cause": "3 failed checks in a row",
  "opened_at": "2026-11-10T03:18:42Z", "resolved_at": "2026-11-10T03:19:22Z", "downtime_seconds": 39}
 ```
 
@@ -424,7 +429,9 @@ incident by hand is not affected.
 
 `catcher/` is a tiny FastAPI app standing in for Slack or PagerDuty. `POST /webhook`
 verifies the signature and stores the alert; `GET /` (http://localhost:8400/) lists
-everything received, newest first. Memory only: restarting it empties the inbox.
+everything received, newest first. An `alert_id` it has already stored is answered
+200 and not stored again. Memory only: restarting it empties the inbox and forgets
+the ids.
 
 ### Watch it work
 

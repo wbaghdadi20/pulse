@@ -381,6 +381,7 @@ sequenceDiagram
         W->>DB: UPDATE attempts = attempts + 1
         Note over W: serialise once, sign those bytes with HMAC-SHA256
         W->>C: POST /webhook with X-Pulse-Signature
+        Note over C: an alert_id already stored is answered 200, not stored again
         alt 2xx
             W->>DB: UPDATE status = sent, sent_at
         else error and attempts below the limit
@@ -391,8 +392,8 @@ sequenceDiagram
     end
 ```
 
-Delivery is at-least-once. The receiver can deduplicate on `incident_id` plus
-`event`, both in the payload.
+Delivery is at-least-once. Every attempt carries the same `alert_id` in the signed
+body, and the catcher stores each id once.
 
 ### Status page: `GET /status`
 
