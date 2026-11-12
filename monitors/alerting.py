@@ -85,6 +85,7 @@ def payload_for(alert: Alert) -> dict[str, Any]:
         else int((resolved_at - incident.opened_at).total_seconds())
     )
     return {
+        "alert_id": alert.pk,
         "event": f"incident.{alert.kind}",
         "monitor": incident.monitor.name,
         "monitor_id": incident.monitor_id,
