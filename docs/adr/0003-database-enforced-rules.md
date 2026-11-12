@@ -20,9 +20,10 @@ incident event produces at most one alert.
 
 ## Decision
 
-Each rule is a named constraint: `uq_monitor_name`,
-`uq_one_open_incident_per_kind` (a partial unique index, `WHERE resolved_at IS
-NULL`) and `uq_alert_incident_kind`. The code inserts inside
+Each rule is a named constraint: `uq_monitor_owner_name` (`uq_monitor_name`
+until D8, when names became unique per owner), `uq_one_open_incident_per_kind`
+(a partial unique index, `WHERE resolved_at IS NULL`), `uq_alert_incident_kind`
+and, since D8, `uq_user_email`. The code inserts inside
 `transaction.atomic()` (a savepoint), catches `IntegrityError`, reads which
 constraint fired (`core.db.violated_constraint`) and raises the matching domain
 error. Any other integrity error is re-raised. The serializers' automatic

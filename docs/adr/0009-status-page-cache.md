@@ -53,8 +53,9 @@ workers, 2000 requests from 50 concurrent clients:
 | without cache | 9,192 ms | 10,505 ms | 6 req/s    |
 | with cache    | 50 ms    | 92 ms     | 718 req/s  |
 
-- An incident opening or resolving shows on the next request. Everything else
-  (uptime, p95, a monitor created, renamed or deleted) can be up to one TTL old.
+- An incident opening or resolving shows on the next request, and since D8 so
+  does a public monitor being created, changed, made private or deleted
+  (ADR 0014). Uptime and p95 can be up to one TTL old.
 - A request that read the old rows just before a commit can still store its page
   just after the delete. The page is then stale for at most one TTL.
 - Stampede: when the key is missing, every concurrent request rebuilds the page.
@@ -67,5 +68,5 @@ workers, 2000 requests from 50 concurrent clients:
 - The cache makes the page fast; it does not make the query fast. The first
   visitor after each expiry still waits 0.4 s, and that grows with `checks`.
   Option 1 is the fix for that and composes with this one.
-- The page is identical for everyone and holds no monitor URLs, so one shared
-  cached copy is safe.
+- The page is identical for everyone, holds no monitor URLs and, since D8, only
+  monitors marked public, so one shared cached copy is safe.
