@@ -133,6 +133,7 @@ def test_the_payload_is_the_documented_contract(incident, webhook):
     (request,) = webhook.requests
     assert request.headers["content-type"] == "application/json"
     assert json.loads(request.content) == {
+        "alert_id": alert.pk,
         "event": "incident.resolved",
         "monitor": incident.monitor.name,
         "monitor_id": incident.monitor.pk,
@@ -194,6 +195,17 @@ def test_a_failing_receiver_is_retried_with_exponential_backoff(
     alert.refresh_from_db()
     assert alert.status == Alert.Status.PENDING
     assert alert.attempts == 4
+
+
+def test_a_retry_carries_the_same_alert_id(alert, webhook, retries):
+    webhook.status = 503
+    with pytest.raises(Retried):
+        tasks.send_alert(alert.pk)
+    webhook.status = 200
+    tasks.send_alert(alert.pk)
+
+    first, second = (json.loads(request.content) for request in webhook.requests)
+    assert first["alert_id"] == second["alert_id"] == alert.pk
 
 
 def test_the_last_failed_attempt_marks_the_alert_failed_not_pending(
