@@ -264,8 +264,13 @@ def test_a_monitor_for_a_name_that_does_not_resolve_yet_is_created(api, dns):
 
 
 @pytest_db
-def test_a_url_that_cannot_be_parsed_is_a_400(api):
-    response = create(api, "http://[not-an-address]/")
+@pytest.mark.parametrize(
+    "url",
+    ["http://[not-an-address]/", "http://example.com/\x7f"],
+    ids=["brackets without an IPv6 address", "a control character"],
+)
+def test_a_url_that_cannot_be_parsed_is_a_400(api, url):
+    response = create(api, url)
 
     assert response.status_code == 400
     assert set(response.json()) == {"url"}

@@ -278,6 +278,17 @@ def test_public_monitors_of_every_owner_are_on_the_page(anon, monitor):
     assert names_on_page(anon) == [monitor.name, "theirs"]
 
 
+def test_a_monitor_created_public_is_on_the_page_on_the_next_request(
+    api, anon, django_capture_on_commit_callbacks
+):
+    assert names_on_page(anon) == []  # and now the empty page is cached
+
+    with django_capture_on_commit_callbacks(execute=True):
+        api.post("/monitors/", {**MONITOR_PAYLOAD, "is_public": True}, format="json")
+
+    assert names_on_page(anon) == [MONITOR_PAYLOAD["name"]]
+
+
 def test_a_monitor_made_private_leaves_the_page_on_the_next_request(
     api, anon, monitor, django_capture_on_commit_callbacks
 ):
