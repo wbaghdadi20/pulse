@@ -8,7 +8,11 @@ def validate_http_url(value: str) -> None:
 
     Django's URLValidator rejects hosts without a dot (e.g. "django") and accepts ftp://.
     """
-    parts = urlsplit(value)
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        # e.g. "http://[not-an-address]/": brackets that do not hold an IPv6 address.
+        raise ValidationError("Enter a valid URL.") from None
     if parts.scheme not in ("http", "https"):
         raise ValidationError("URL must start with 'http://' or 'https://'.")
     if not parts.hostname:

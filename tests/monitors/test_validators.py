@@ -25,6 +25,7 @@ def test_accepts_http_urls_including_docker_hostnames(url):
         ("http://", "hostname"),
         ("http:///path", "hostname"),
         ("http://host:abc/", "port"),
+        ("http://[not-an-address]/", "valid URL"),
     ],
 )
 def test_rejects_bad_urls_with_a_clear_message(url, message):
