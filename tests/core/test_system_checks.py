@@ -57,3 +57,29 @@ def test_every_bad_setting_gets_its_own_error(settings):
         "pulse.E001",
         "pulse.E002",
     ]
+
+
+@pytest.mark.parametrize("value", [59, 86_401])
+def test_out_of_range_token_lifetime_is_reported(settings, value):
+    settings.PULSE_JWT_TTL_SECONDS = value
+    assert [e.id for e in pulse_errors()] == ["pulse.E005"]
+
+
+@pytest.mark.parametrize("value", [60, 86_400])
+def test_token_lifetime_bounds_are_inclusive(settings, value):
+    settings.PULSE_JWT_TTL_SECONDS = value
+    assert pulse_errors() == []
+
+
+def test_a_short_token_secret_is_reported_without_printing_it(settings):
+    settings.PULSE_JWT_SECRET = "s3cret-but-far-too-short"
+
+    (error,) = pulse_errors()
+
+    assert error.id == "pulse.E006"
+    assert settings.PULSE_JWT_SECRET not in f"{error.msg} {error.hint}"
+
+
+def test_a_token_secret_of_32_characters_is_long_enough(settings):
+    settings.PULSE_JWT_SECRET = "x" * 32
+    assert pulse_errors() == []
