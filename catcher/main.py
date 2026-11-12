@@ -1,6 +1,7 @@
 """catcher: Pulse's alert inbox. It stands in for Slack or PagerDuty.
 
-    POST /webhook   store a signed alert; 401 if the signature is missing or wrong
+    POST /webhook   store a signed alert; 401 if the signature is missing or wrong;
+                    an alert_id already stored is answered 200 and not stored again
     GET  /          everything received, newest first
 
 Pulse signs the exact bytes it sends with HMAC-SHA256 over a shared secret
@@ -23,6 +24,7 @@ SIGNATURE_HEADER = "X-Pulse-Signature"
 
 app = FastAPI(title="catcher")
 received: list[dict[str, Any]] = []
+seen: set[int] = set()
 
 
 def signature_of(body: bytes) -> str:
@@ -30,7 +32,7 @@ def signature_of(body: bytes) -> str:
 
 
 @app.post("/webhook")
-async def webhook(request: Request) -> dict[str, int]:
+async def webhook(request: Request) -> dict[str, int | bool]:
     body = (
         await request.body()
     )  # the raw bytes: what was signed, not a re-serialisation
@@ -44,6 +46,12 @@ async def webhook(request: Request) -> dict[str, int]:
         payload: Any = json.loads(body)
     except ValueError:
         payload = body.decode(errors="replace")
+    alert_id = payload.get("alert_id") if isinstance(payload, dict) else None
+    if isinstance(alert_id, int):
+        if alert_id in seen:
+            # 200, not 409: any other answer would make Pulse retry again.
+            return {"stored": len(received), "duplicate": True}
+        seen.add(alert_id)
     received.insert(
         0,
         {
@@ -52,7 +60,7 @@ async def webhook(request: Request) -> dict[str, int]:
             "body": payload,
         },
     )
-    return {"stored": len(received)}
+    return {"stored": len(received), "duplicate": False}
 
 
 @app.get("/")
