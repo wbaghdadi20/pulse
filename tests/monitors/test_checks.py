@@ -4,7 +4,6 @@ httpx.MockTransport calls our handler instead of opening a socket. The handler
 either returns a Response or raises the same exception httpx would raise.
 """
 
-import socket
 import time
 
 import httpx
@@ -89,11 +88,18 @@ def test_connection_refused():
     )
 
 
-def test_dns_failure():
-    def handler(request):
-        raise httpx.ConnectError("unknown host", request=request) from socket.gaierror()
+def test_dns_failure(dns):
+    dns["target"] = []  # the name does not resolve
+    sent = []
 
-    assert probe(make_monitor(), fake_client(handler))["error_type"] == "dns"
+    def handler(request):
+        sent.append(request)
+        return httpx.Response(200)
+
+    result = probe(make_monitor(), fake_client(handler))
+
+    assert (result["ok"], result["error_type"]) == (False, "dns")
+    assert sent == [], "there is no address to send a request to"
 
 
 def test_other_network_error_is_classified_as_error():
@@ -233,15 +239,16 @@ def test_network_errors_still_classify_with_assertions():
     assert probe(make_monitor(assertions=DEEP), client)["error_type"] == "timeout"
 
 
-def test_uses_the_monitors_method_and_url():
+def test_uses_the_monitors_method_host_and_path():
     seen = {}
 
     def handler(request):
-        seen["method"], seen["url"] = request.method, str(request.url)
+        seen["method"], seen["host"] = request.method, request.headers["host"]
+        seen["path"] = request.url.raw_path.decode()
         return httpx.Response(200)
 
-    probe(make_monitor(method="HEAD", url="http://x:1/ht/"), fake_client(handler))
-    assert seen == {"method": "HEAD", "url": "http://x:1/ht/"}
+    probe(make_monitor(method="HEAD", url="http://x:1/ht/?a=1"), fake_client(handler))
+    assert seen == {"method": "HEAD", "host": "x:1", "path": "/ht/?a=1"}
 
 
 @pytest.mark.parametrize(
@@ -256,3 +263,11 @@ def test_never_raises(exc_factory):
     client = fake_client(raising(exc_factory))
     result = probe(make_monitor(), client)  # must not raise
     assert result["ok"] is False
+
+
+def test_a_url_httpx_cannot_parse_is_a_failed_check_not_a_crash():
+    client = fake_client(lambda request: httpx.Response(200))
+
+    result = probe(make_monitor(url="http://[not-an-address]/"), client)
+
+    assert (result["ok"], result["error_type"]) == (False, "error")

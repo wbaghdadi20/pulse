@@ -1,10 +1,12 @@
 from datetime import datetime
 from typing import Any
 
+import httpx
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework import serializers
 
+from . import ssrf
 from .models import Incident, Monitor
 
 
@@ -55,6 +57,24 @@ class MonitorSerializer(serializers.ModelSerializer[Monitor]):
         # races. Uniqueness is left to the database instead; the service turns a
         # violation into 409. max_length is kept: DRF adds it separately.
         extra_kwargs: dict[str, dict[str, Any]] = {"name": {"validators": []}}
+
+    def validate_url(self, value: str) -> str:
+        """Refuse a URL whose host is on an address checks may not call.
+
+        A host that does not resolve is accepted: there is nothing to reach, and
+        each check resolves it again before connecting.
+        """
+        try:
+            ssrf.safe_address(value)
+        except ssrf.BlockedAddress:
+            raise serializers.ValidationError(
+                "This host is on a private or internal address, which Pulse does not check."
+            ) from None
+        except httpx.InvalidURL:
+            raise serializers.ValidationError("Enter a valid URL.") from None
+        except OSError:
+            pass
+        return value
 
     def validate_maintenance_until(self, value: datetime | None) -> datetime | None:
         if value is not None and value <= timezone.now():

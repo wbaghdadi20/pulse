@@ -6,7 +6,9 @@ rolled back afterwards, so each test starts from empty tables.
 """
 
 import fcntl
+import ipaddress
 import os
+import socket
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -22,7 +24,7 @@ from rest_framework.test import APIClient
 
 from accounts import tokens
 from accounts.models import User
-from monitors import clients
+from monitors import clients, ssrf
 from monitors.models import Monitor
 
 # Property tests: a fast everyday profile, a thorough one for CI.
@@ -94,6 +96,41 @@ def local_cache(settings) -> None:
         "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}
     }
     cache.clear()
+
+
+class FakeDNS:
+    """Stand-in for ssrf.resolve. Every name is on a public address unless a test
+    gives it others: dns["postgres"] = ["172.18.0.3"]. An empty list means the name
+    does not resolve. `lookups` lists the hosts that were asked for, in order."""
+
+    PUBLIC = "93.184.216.34"
+
+    def __init__(self) -> None:
+        self.records: dict[str, list[str]] = {}
+        self.lookups: list[str] = []
+        self.real = ssrf.resolve
+
+    def __setitem__(self, host: str, addresses: list[str]) -> None:
+        self.records[host] = addresses
+
+    def resolve(self, host: str, port: int) -> list[str]:
+        self.lookups.append(host)
+        if host in self.records:
+            if not self.records[host]:
+                raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+            return self.records[host]
+        try:
+            return [str(ipaddress.ip_address(host))]  # a literal is its own address
+        except ValueError:
+            return [self.PUBLIC]
+
+
+@pytest.fixture(autouse=True)
+def dns(monkeypatch: pytest.MonkeyPatch) -> FakeDNS:
+    """No test looks a name up for real: results would depend on where it runs."""
+    fake = FakeDNS()
+    monkeypatch.setattr(ssrf, "resolve", fake.resolve)
+    return fake
 
 
 @pytest.fixture
