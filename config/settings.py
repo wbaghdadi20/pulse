@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "core",
+    "accounts",
     "monitors",
 ]
 
@@ -83,6 +84,14 @@ DATABASES = {
     }
 }
 
+
+# Users and passwords
+# https://docs.djangoproject.com/en/6.1/topics/auth/customizing/
+
+AUTH_USER_MODEL = "accounts.User"
+
+# argon2id, through argon2-cffi. The only entry: no older hashes exist to read.
+PASSWORD_HASHERS = ["django.contrib.auth.hashers.Argon2PasswordHasher"]
 
 # Password validation
 # https://docs.djangoproject.com/en/6.1/ref/settings/#auth-password-validators
@@ -137,6 +146,11 @@ MAILERS = {
 REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "core.exception_handler.exception_handler",
 }
+
+# Signs the access tokens /login hands out. Not DJANGO_SECRET_KEY: rotating one
+# must not invalidate what the other protects.
+PULSE_JWT_SECRET = env_str("PULSE_JWT_SECRET")
+PULSE_JWT_TTL_SECONDS = env_int("PULSE_JWT_TTL_SECONDS", default=3600)
 
 
 # Pulse

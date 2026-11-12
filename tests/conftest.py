@@ -20,6 +20,8 @@ from django.core.cache import cache
 from hypothesis import settings as hypothesis_settings
 from rest_framework.test import APIClient
 
+from accounts import tokens
+from accounts.models import User
 from monitors import clients
 from monitors.models import Monitor
 
@@ -40,9 +42,28 @@ MONITOR_PAYLOAD = {
 }
 
 
+def client_for(user: User) -> APIClient:
+    """A client that sends this user's token, issued directly instead of through /login."""
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens.issue(user.pk)}")
+    return client
+
+
 @pytest.fixture
-def api() -> APIClient:
-    """DRF's test client: like FastAPI's TestClient, but talks to the Django app in-process."""
+def user(db) -> User:
+    """An account with no usable password: tests that need one sign up through the API."""
+    return User.objects.create_user("owner@example.com")
+
+
+@pytest.fixture
+def api(user) -> APIClient:
+    """DRF's test client, logged in as `user`. It talks to the Django app in-process."""
+    return client_for(user)
+
+
+@pytest.fixture
+def anon() -> APIClient:
+    """The same client with no token."""
     return APIClient()
 
 

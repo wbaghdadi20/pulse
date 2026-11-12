@@ -16,3 +16,7 @@ class NotFoundError(DomainError):
 
 class ConflictError(DomainError):
     """The change clashes with existing data."""
+
+
+class AuthenticationError(DomainError):
+    """The caller did not prove who they are."""
