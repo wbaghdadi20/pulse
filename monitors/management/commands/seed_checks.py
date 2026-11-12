@@ -3,7 +3,11 @@ from typing import Any
 from django.core.management.base import BaseCommand, CommandParser
 from django.db import connection, transaction
 
+from accounts.models import User
 from monitors.models import Monitor
+
+# Owns the seed monitors. No usable password: nobody can log in as it.
+SEED_OWNER = "seed@pulse.invalid"
 
 # One INSERT ... SELECT over generate_series: Postgres builds every row itself,
 # which takes seconds. Inserting rows one by one from Python would take minutes.
@@ -38,8 +42,12 @@ class Command(BaseCommand):
     def handle(self, *args: Any, **options: Any) -> None:
         count: int = options["count"]
         monitors: int = options["monitors"]
+        owner = User.objects.filter(
+            email=SEED_OWNER
+        ).first() or User.objects.create_user(SEED_OWNER)
         monitor_ids = [
             Monitor.objects.get_or_create(
+                owner=owner,
                 name=f"seed-{i}",
                 defaults={
                     "url": f"http://seed-{i}.invalid/",

@@ -12,7 +12,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from monitors.models import Check, Incident, Monitor
-from tests.conftest import MONITOR_PAYLOAD
+from tests.conftest import MONITOR_PAYLOAD, create_monitor
 
 pytestmark = pytest.mark.django_db  # every test in this file may use the database
 
@@ -126,7 +126,7 @@ def test_patch_changes_only_the_sent_fields(api, monitor):
 
 
 def test_patch_to_a_taken_name_returns_409(api, monitor):
-    other = Monitor.objects.create(**{**MONITOR_PAYLOAD, "name": "other"})
+    other = create_monitor(name="other")
     response = api.patch(
         reverse("monitor-detail", args=[other.pk]), {"name": "backend"}, format="json"
     )
@@ -152,7 +152,7 @@ def test_delete_returns_204_then_404(api, monitor):
 
 def test_list_is_paginated_with_a_total(api, db):
     for i in range(25):
-        Monitor.objects.create(**{**MONITOR_PAYLOAD, "name": f"m{i:02d}"})
+        create_monitor(name=f"m{i:02d}")
 
     page1 = api.get(reverse("monitor-list")).json()
     assert page1["count"] == 25
@@ -167,7 +167,7 @@ def test_list_is_paginated_with_a_total(api, db):
 
 def test_list_limit_is_capped(api, db):
     for i in range(3):
-        Monitor.objects.create(**{**MONITOR_PAYLOAD, "name": f"m{i}"})
+        create_monitor(name=f"m{i}")
     response = api.get(reverse("monitor-list"), {"limit": 100000})
     assert len(response.json()["results"]) == 3  # fine: cap is 100, we have 3
 
@@ -192,7 +192,7 @@ def test_check_now_on_unknown_monitor_is_404(api, fake_check):
 
 
 def test_check_now_checks_that_monitor_and_no_other(api, monitor, fake_check):
-    other = Monitor.objects.create(**{**MONITOR_PAYLOAD, "name": "other"})
+    other = create_monitor(name="other")
 
     api.post(reverse("monitor-check", args=[other.pk]))
 
@@ -235,7 +235,7 @@ def test_uptime_counts_only_the_requested_window(api, monitor, settings):
 
 
 def test_uptime_counts_only_this_monitors_checks(api, monitor):
-    other = Monitor.objects.create(**{**MONITOR_PAYLOAD, "name": "other"})
+    other = create_monitor(name="other")
     now = timezone.now()
     for owner, ok in [(monitor, True), (other, False), (other, False)]:
         Check.objects.create(

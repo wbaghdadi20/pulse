@@ -40,6 +40,20 @@ MONITOR_PAYLOAD = {
     "timeout_s": 5,
     "interval_s": 30,
 }
+OWNER_EMAIL = "owner@example.com"
+
+
+def default_owner() -> User:
+    """The account behind the `user` and `api` fixtures. No usable password."""
+    existing = User.objects.filter(email=OWNER_EMAIL).first()
+    return existing or User.objects.create_user(OWNER_EMAIL)
+
+
+def create_monitor(owner: User | None = None, **fields: Any) -> Monitor:
+    """A saved monitor: MONITOR_PAYLOAD with `fields` on top, owned by the default owner."""
+    return Monitor.objects.create(
+        owner=owner or default_owner(), **{**MONITOR_PAYLOAD, **fields}
+    )
 
 
 def client_for(user: User) -> APIClient:
@@ -51,8 +65,8 @@ def client_for(user: User) -> APIClient:
 
 @pytest.fixture
 def user(db) -> User:
-    """An account with no usable password: tests that need one sign up through the API."""
-    return User.objects.create_user("owner@example.com")
+    """The account that owns what the other fixtures create."""
+    return default_owner()
 
 
 @pytest.fixture
@@ -70,7 +84,7 @@ def anon() -> APIClient:
 @pytest.fixture
 def monitor(db) -> Monitor:
     """One saved monitor. Depending on `db` opts this fixture into the database."""
-    return Monitor.objects.create(**MONITOR_PAYLOAD)
+    return create_monitor()
 
 
 @pytest.fixture(autouse=True)

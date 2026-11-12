@@ -11,8 +11,8 @@ from django.utils import timezone
 
 from monitors import incidents, services
 from monitors.incidents import Action
-from monitors.models import Alert, Check, Incident, Monitor
-from tests.conftest import MONITOR_PAYLOAD
+from monitors.models import Alert, Check, Incident
+from tests.conftest import create_monitor
 
 pytestmark = pytest.mark.django_db
 
@@ -88,7 +88,7 @@ def test_an_opened_incident_says_why(monitor, fake_check):
 
 def test_incidents_are_per_monitor(monitor, fake_check):
     """An open incident on one monitor must not hide a new outage on another."""
-    other = Monitor.objects.create(**{**MONITOR_PAYLOAD, "name": "other"})
+    other = create_monitor(name="other")
     fake_check(ok=False)
     for _ in range(3):
         services.check_monitor(monitor)

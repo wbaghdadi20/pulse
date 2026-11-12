@@ -42,6 +42,7 @@ class MonitorSerializer(serializers.ModelSerializer[Monitor]):
             "timeout_s",
             "interval_s",
             "assertions",
+            "is_public",
             "created_at",
             "last_checked_at",
             "next_check_at",

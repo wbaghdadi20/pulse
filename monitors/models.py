@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
@@ -15,8 +16,17 @@ class Monitor(models.Model):
         GET = "GET"
         HEAD = "HEAD"
 
+    # No single-column index: uq_monitor_owner_name below starts with owner_id.
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="monitors",
+        db_index=False,
+    )
     name = models.CharField(max_length=100)
     url = models.CharField(max_length=2048, validators=[validate_http_url])
+    # Shown on the public status page. Off unless the owner turns it on.
+    is_public = models.BooleanField(default=False)
     method = models.CharField(max_length=4, choices=Method.choices, default=Method.GET)
     expected_status = models.PositiveSmallIntegerField(
         default=200, validators=[MinValueValidator(100), MaxValueValidator(599)]
@@ -42,7 +52,11 @@ class Monitor(models.Model):
         db_table = "monitors"
         constraints = [
             # Named, so the service can tell this violation apart from others.
-            models.UniqueConstraint(fields=["name"], name="uq_monitor_name"),
+            # Per owner: a name unique across everyone would tell one user which
+            # names another user has taken.
+            models.UniqueConstraint(
+                fields=["owner", "name"], name="uq_monitor_owner_name"
+            ),
         ]
 
     def __str__(self) -> str:

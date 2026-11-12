@@ -9,6 +9,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.authentication import current_user
 from core.pagination import AfterIdPagination, DefaultPagination
 from core.views import PublicAPIView
 
@@ -31,7 +32,9 @@ class MonitorListView(APIView):
     def post(self, request: Request) -> Response:
         serializer = MonitorSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        monitor = services.create_monitor(serializer.validated_data)
+        monitor = services.create_monitor(
+            current_user(request), serializer.validated_data
+        )
         return Response(MonitorSerializer(monitor).data, status=status.HTTP_201_CREATED)
 
 
