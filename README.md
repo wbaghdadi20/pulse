@@ -7,7 +7,8 @@ and serves a public status page.
 Built with Django, PostgreSQL, Celery, Redis and Docker Compose.
 
 How it fits together: [ARCHITECTURE.md](ARCHITECTURE.md) (C4 diagrams, data model,
-request and task flows). Why it is built this way: [docs/adr/](docs/adr/).
+request and task flows). Why it is built this way: [docs/adr/](docs/adr/). How it
+was attacked and fixed: [SECURITY.md](SECURITY.md).
 
 ## Prerequisites
 
@@ -30,7 +31,8 @@ request and task flows). Why it is built this way: [docs/adr/](docs/adr/).
    cp .env.example .env
    ```
 
-3. Generate a secret key and paste it into `.env` as `DJANGO_SECRET_KEY`:
+3. Generate two secrets and paste them into `.env` as `DJANGO_SECRET_KEY` and
+   `PULSE_JWT_SECRET` (run it twice; they must differ):
 
    ```bash
    python3 -c "import secrets; print(secrets.token_urlsafe(50))"
@@ -59,7 +61,21 @@ request and task flows). Why it is built this way: [docs/adr/](docs/adr/).
 
    Expected: `HTTP/1.1 200 OK` with `{"status": "ok"}`.
 
-7. Optional, for something worth monitoring: start the `shop` target (see _shop_ below):
+7. Create an account and log in. Everything except `/health` and `/status` needs
+   the token:
+
+   ```bash
+   curl -X POST localhost:8100/signup -H 'Content-Type: application/json' \
+     -d '{"email": "you@example.com", "password": "a long passphrase"}'
+   TOKEN=$(curl -s -X POST localhost:8100/login -H 'Content-Type: application/json' \
+     -d '{"email": "you@example.com", "password": "a long passphrase"}' \
+     | python3 -c 'import sys, json; print(json.load(sys.stdin)["access_token"])')
+   curl -H "Authorization: Bearer $TOKEN" localhost:8100/monitors/
+   ```
+
+   The token is valid for an hour. The examples below assume `$TOKEN` is set.
+
+8. Optional, for something worth monitoring: start the `shop` target (see _shop_ below):
 
    ```bash
    docker compose -f shop/compose.yaml up --build -d
@@ -72,7 +88,7 @@ request and task flows). Why it is built this way: [docs/adr/](docs/adr/).
 | `api`      | Django app            | http://localhost:8100                      |
 | `postgres` | PostgreSQL 16         | `localhost:5433` (bound to 127.0.0.1 only) |
 | `flaky`    | test target (FastAPI) | http://localhost:8200                      |
-| `redis`    | Celery's queue (db 0), status page cache and check locks (db 1) | not published |
+| `redis`    | Celery's queue (db 0), status page cache, check locks and rate limit counters (db 1) | not published |
 | `worker`   | Celery worker: runs the scheduled checks and sends alerts | no port |
 | `beat`     | Celery beat: the clock that queues due checks every 10 s  | no port |
 | `catcher`  | alert inbox (FastAPI) | http://localhost:8400                      |
@@ -95,13 +111,17 @@ alongside other local stacks. The `shop` target is a separate Compose project
 
 ## API
 
-Built with Django REST framework. Open any endpoint in a browser for DRF's
-browsable API.
+Built with Django REST framework. The first four endpoints are public. Every
+other one needs `Authorization: Bearer <token>` and only ever sees the caller's
+own monitors: without a valid token it answers 401, and for someone else's
+monitor 404.
 
 | Method + URL                                | Does                                              | Success | Errors        |
 | ------------------------------------------- | ------------------------------------------------- | ------- | ------------- |
 | `GET /health`                               | liveness check                                    | 200     |               |
-| `GET /status`                               | public status page: state, 90-day uptime, p95, latest incidents | 200 |         |
+| `GET /status`                               | public status page: state, 90-day uptime, p95, latest incidents of public monitors | 200 |         |
+| `POST /signup`                              | create an account: `email`, `password`            | 201     | 400, 409, 429 |
+| `POST /login`                               | exchange `email` and `password` for a token       | 200     | 400, 401, 429 |
 | `POST /monitors/`                           | create a monitor                                  | 201     | 400, 409      |
 | `GET /monitors/?limit&offset` or `?after`   | list monitors (paginated)                         | 200     | 400           |
 | `GET /monitors/<id>/`                       | get one monitor                                   | 200     | 404           |
@@ -114,11 +134,32 @@ browsable API.
 Example:
 
 ```bash
-curl -X POST http://localhost:8100/monitors/ -H 'Content-Type: application/json' \
+curl -X POST http://localhost:8100/monitors/ -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
   -d '{"name": "httpbin", "url": "https://httpbin.org/get", "timeout_s": 5, "interval_s": 30}'
 ```
 
 Conventions:
+
+- **Login** returns `{"access_token": ..., "token_type": "Bearer", "expires_in": 3600}`.
+  A wrong password and an unknown email get the same 401. The ticket's FastAPI
+  dependency `get_current_user` is, in DRF, an authentication class
+  (`accounts.authentication.JWTAuthentication`) plus `IsAuthenticated` as the
+  default permission. [ADR 0013](docs/adr/0013-authentication.md).
+- **A monitor belongs to whoever created it.** The owner comes from the token,
+  never from the body, and names are unique per owner.
+  [ADR 0014](docs/adr/0014-ownership.md).
+- **`is_public`** (default `false`) puts a monitor on `/status`.
+- **Monitor URLs must be on a public address.** A host that resolves to a private,
+  loopback, link-local or otherwise internal address is refused with a 400 when
+  the monitor is created or edited, and a check of one that turns internal later
+  records `blocked`. Your own targets are the exception, by name:
+  `PULSE_ALLOWED_PRIVATE_HOSTS`. Redirects are not followed: a 3xx is the result.
+  [ADR 0015](docs/adr/0015-ssrf-guard.md).
+- **Rate limits** are per client address and per clock minute: 60 requests on the
+  API, 5 on `/login` and `/signup` together. Over the limit is a 429 with
+  `Retry-After`. `/health` and `/status` are not limited.
+  [ADR 0016](docs/adr/0016-rate-limiting.md).
 
 - **Invalid input returns 400** with one message per field. That is DRF's
   convention (FastAPI uses 422).
@@ -136,7 +177,8 @@ Conventions:
   [ADR 0011](docs/adr/0011-keyset-pagination.md).
 - **"Check now" always returns 200.** A target that is down is a result, not an
   error in Pulse. `error_type` is one of `timeout`, `connection_refused`, `dns`,
-  `wrong_status`, `assertion_failed`, or `error` (anything else, e.g. a TLS failure).
+  `wrong_status`, `assertion_failed`, `blocked` (the host is on an internal
+  address), or `error` (anything else, e.g. a TLS failure).
   `timeout` covers both a target that goes silent and one that keeps sending but
   has not finished within `timeout_s` in total
   ([ADR 0010](docs/adr/0010-check-deadline.md)).
@@ -304,7 +346,8 @@ keep ten. [ADR 0012](docs/adr/0012-latest-check-without-n-plus-one.md).
 
 | Rule                          | Constraint                                                                               | Violation → API |
 | ----------------------------- | ---------------------------------------------------------------------------------------- | --------------- |
-| Monitor names are unique      | `uq_monitor_name` (unique)                                                               | 409             |
+| Monitor names are unique per owner | `uq_monitor_owner_name` (unique on `(owner_id, name)`)                              | 409             |
+| One account per email         | `uq_user_email` (unique), `ck_user_email_lowercase` (check)                              | 409             |
 | One open incident per monitor and kind | `uq_one_open_incident_per_kind`: partial unique index on `(monitor_id, kind)` `WHERE resolved_at IS NULL` | 409             |
 
 The code never asks "is the name free?" or "is an incident already open?" before
@@ -467,7 +510,7 @@ and the trade-offs: [ADR 0008](docs/adr/0008-one-check-per-interval.md).
 ```bash
 docker compose up -d --scale worker=3
 curl -X POST localhost:8200/mode -H 'Content-Type: application/json' -d '{"mode": "slow", "slow_seconds": 14}'
-curl -X PATCH localhost:8100/monitors/<id>/ -H 'Content-Type: application/json' -d '{"interval_s": 10, "timeout_s": 15}'
+curl -X PATCH localhost:8100/monitors/<id>/ -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"interval_s": 10, "timeout_s": 15}'
 ```
 
 A check now takes 14 s and is due every 10 s. Two queries show the damage. The
@@ -582,10 +625,11 @@ again: no rows either, and one check where there had been six.
 
 ## Status page
 
-`GET /status` is public: no login. For each monitor it returns `state` (`down`
-while an incident is open, otherwise `up`), `uptime_percent` and `p95_latency_ms`
-over the last 90 days, and its three latest incidents. It never returns a
-monitor's URL.
+`GET /status` is public: no login. For each monitor with `is_public` set, whoever
+owns it, it returns `state` (`down` while an incident is open, otherwise `up`),
+`uptime_percent` and `p95_latency_ms` over the last 90 days, and its three latest
+incidents. It never returns a monitor's URL or owner, and a private monitor is
+not on it at all.
 
 ```bash
 curl -s localhost:8100/status | python -m json.tool
@@ -667,10 +711,10 @@ Two monitors show the difference. The deep one asserts on the two components
 that matter and ignores the status code:
 
 ```bash
-curl -X POST localhost:8100/monitors/ -H 'Content-Type: application/json' -d @- <<'EOF'
+curl -X POST localhost:8100/monitors/ -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d @- <<'EOF'
 {"name": "shop shallow", "url": "http://shop:8000/health", "timeout_s": 5, "interval_s": 30}
 EOF
-curl -X POST localhost:8100/monitors/ -H 'Content-Type: application/json' -d @- <<'EOF'
+curl -X POST localhost:8100/monitors/ -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d @- <<'EOF'
 {"name": "shop deep", "url": "http://shop:8000/ht/", "timeout_s": 5, "interval_s": 30,
  "assertions": {"Database(alias='default')": "OK", "Redis(db=0, host='shop-redis', port=6379)": "OK"}}
 EOF
@@ -680,8 +724,8 @@ The Checkpoint 1 demo:
 
 ```bash
 docker compose -f shop/compose.yaml stop shop-redis
-curl -X POST localhost:8100/monitors/<deep id>/check/      # ok: false, error_type: assertion_failed, status_code: 500
-curl -X POST localhost:8100/monitors/<shallow id>/check/   # ok: true
+curl -X POST -H "Authorization: Bearer $TOKEN" localhost:8100/monitors/<deep id>/check/      # ok: false, error_type: assertion_failed, status_code: 500
+curl -X POST -H "Authorization: Bearer $TOKEN" localhost:8100/monitors/<shallow id>/check/   # ok: true
 docker compose -f shop/compose.yaml start shop-redis
 ```
 
@@ -742,6 +786,12 @@ All settings come from environment variables in `.env` (never committed).
 | `PULSE_WEBHOOK_TIMEOUT_S` | Seconds one delivery attempt may take. 1–30, default `5`. |
 | `PULSE_REDIS_URL`      | Redis for the cache and the check locks. Defaults to `redis://redis:6379/1`, a different database from the broker's. |
 | `PULSE_STATUS_CACHE_SECONDS` | Seconds `/status` is served from the cache. 0–300, default `15`; `0` turns the cache off. |
+| `PULSE_JWT_SECRET`     | Signs access tokens. Required, at least 32 characters, different from `DJANGO_SECRET_KEY`. Changing it logs everyone out. |
+| `PULSE_JWT_TTL_SECONDS` | Seconds a token is valid after `/login`. 60–86400, default `3600`. |
+| `PULSE_ALLOWED_PRIVATE_HOSTS` | Comma-separated hostnames on private addresses that monitors may point at: your own targets (`flaky,shop`). Default: none. |
+| `PULSE_RATE_LIMIT_PER_MINUTE` | Requests per minute from one client address, on the API. 1–6000, default `60`. |
+| `PULSE_AUTH_RATE_LIMIT_PER_MINUTE` | The same, on `/login` and `/signup` together. 1–60, default `5`. |
+| `PULSE_NUM_PROXIES`    | Proxies in front of Pulse that add to `X-Forwarded-For`. 0–5, default `0`: the header is ignored. |
 
 Parsing is done by the typed readers in `config/env.py` (`env_str`, `env_bool`,
 `env_int`, `env_list`): a blank value counts as unset, a boolean accepts only
@@ -754,6 +804,13 @@ variable's name. `tests/config/` covers them with Hypothesis.
   8100 or 5433. Stop it, or change the host port in `compose.yaml`.
 - **The app container keeps restarting or exits**: check `docker compose logs api`.
   A `KeyError` means a variable is missing from `.env`.
+- **`migrate` fails after pulling D8** (`InconsistentMigrationHistory`, or
+  `column "owner_id" ... contains null values`): the user model changed and
+  monitors now need an owner, so a database from before D8 cannot be migrated.
+  Reset it with `docker compose down -v`, start the stack and run `migrate` again.
+- **401 on every request**: the token expired (one hour by default). Log in again.
+- **429 Too Many Requests**: the rate limit. `Retry-After` says how many seconds
+  are left in the minute.
 - **`password authentication failed for user`**: Postgres only applies `POSTGRES_PASSWORD`
   when its data volume is first created. If you changed the password in `.env` later,
   reset the database with `docker compose down -v` (deletes all data), then
@@ -791,8 +848,11 @@ docker compose run --rm catcher pytest -q  # the catcher's own tests (signature 
 ```
 
 Tests live in a root-level `tests/` package, one sub-package per Django app
-(`tests/monitors/`, `tests/core/`), with the shared fixtures (`api`, `monitor`,
-`fake_check`) in `tests/conftest.py` so every app can use them. Keeping tests out of
+(`tests/monitors/`, `tests/core/`, `tests/accounts/`), with the shared fixtures in
+`tests/conftest.py` so every app can use them: `api` (a client logged in as
+`user`, with a token issued directly instead of through `/login`), `anon` (no
+token), `monitor`, `fake_check`, and `dns`, which replaces the resolver for every
+test so none looks a name up for real. Keeping tests out of
 the app packages also keeps them out of the coverage report's `source`.
 
 Tests run inside the `api` container because they need the same environment and
