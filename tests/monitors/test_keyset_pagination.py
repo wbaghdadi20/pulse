@@ -5,16 +5,14 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from monitors.models import Monitor
-from tests.conftest import MONITOR_PAYLOAD
+from tests.conftest import MONITOR_PAYLOAD, create_monitor
 
 pytestmark = pytest.mark.django_db
 
 
 @pytest.fixture
 def monitors() -> list[Monitor]:
-    return [
-        Monitor.objects.create(**{**MONITOR_PAYLOAD, "name": f"m{n}"}) for n in range(5)
-    ]
+    return [create_monitor(name=f"m{n}") for n in range(5)]
 
 
 def ids(response) -> list[int]:
@@ -78,9 +76,9 @@ def test_a_row_deleted_between_pages_does_not_shift_the_next_page(api, monitors)
     assert ids(by_keyset) == [monitors[2].pk, monitors[3].pk]
 
 
-def test_limit_defaults_and_is_capped_like_offset_pagination(api, db):
+def test_limit_defaults_and_is_capped_like_offset_pagination(api, user):
     Monitor.objects.bulk_create(
-        Monitor(**{**MONITOR_PAYLOAD, "name": f"m{n}"}) for n in range(105)
+        Monitor(owner=user, **{**MONITOR_PAYLOAD, "name": f"m{n}"}) for n in range(105)
     )
 
     assert len(api.get("/monitors/?after=0").json()["results"]) == 20

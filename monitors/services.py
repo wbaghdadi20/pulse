@@ -25,6 +25,7 @@ from django.db.models.functions import JSONObject
 from django.db.models.lookups import GreaterThan
 from django.utils import timezone
 
+from accounts.models import User
 from core.db import violated_constraint
 
 from . import alerting, incidents, status_page, uptime
@@ -67,8 +68,8 @@ def get_monitor(pk: int) -> Monitor:
         raise MonitorNotFound(pk) from None
 
 
-def create_monitor(data: dict[str, Any]) -> Monitor:
-    monitor = Monitor(**data)
+def create_monitor(owner: User, data: dict[str, Any]) -> Monitor:
+    monitor = Monitor(owner=owner, **data)
     _save(monitor)
     return monitor
 
@@ -226,6 +227,6 @@ def _save(monitor: Monitor, **save_kwargs: Any) -> None:
         with transaction.atomic():
             monitor.save(**save_kwargs)
     except IntegrityError as exc:
-        if violated_constraint(exc) == "uq_monitor_name":
+        if violated_constraint(exc) == "uq_monitor_owner_name":
             raise MonitorNameTaken(monitor.name) from exc
         raise

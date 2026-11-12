@@ -6,7 +6,7 @@ import pytest
 from django.utils import timezone
 
 from monitors.models import Check, Monitor
-from tests.conftest import MONITOR_PAYLOAD
+from tests.conftest import MONITOR_PAYLOAD, create_monitor
 
 pytestmark = pytest.mark.django_db
 
@@ -23,10 +23,7 @@ def add_check(monitor: Monitor, *, ok: bool = True, minutes_ago: int = 0) -> Che
 
 
 def make_monitors(count: int) -> list[Monitor]:
-    monitors = [
-        Monitor.objects.create(**{**MONITOR_PAYLOAD, "name": f"m{n}"})
-        for n in range(count)
-    ]
+    monitors = [create_monitor(name=f"m{n}") for n in range(count)]
     for monitor in monitors:
         add_check(monitor, minutes_ago=5)
         add_check(monitor, ok=False)
@@ -56,7 +53,7 @@ def test_a_monitor_never_checked_has_no_latest_check(api, monitor):
 
 
 def test_latest_checks_are_not_mixed_up_between_monitors(api, monitor):
-    other = Monitor.objects.create(**{**MONITOR_PAYLOAD, "name": "other"})
+    other = create_monitor(name="other")
     add_check(monitor, ok=True)
     add_check(other, ok=False)
 

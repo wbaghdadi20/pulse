@@ -8,11 +8,11 @@ from django.db import connection, transaction
 
 from monitors import services
 from monitors.models import Monitor
-from tests.conftest import MONITOR_PAYLOAD
+from tests.conftest import create_monitor
 
 
 def make_monitor(name: str, **fields) -> Monitor:
-    return Monitor.objects.create(**{**MONITOR_PAYLOAD, "name": name, **fields})
+    return create_monitor(name=name, **fields)
 
 
 @pytest.mark.django_db

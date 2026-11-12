@@ -39,3 +39,10 @@ class JWTAuthentication(BaseAuthentication):
             return None
         # A token outlives its user: an account deleted since login is rejected too.
         return User.objects.filter(pk=user_id).first()
+
+
+def current_user(request: Request) -> User:
+    """request.user as a User. IsAuthenticated has already turned anonymous callers away."""
+    user = request.user
+    assert isinstance(user, User)
+    return user

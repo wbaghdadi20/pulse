@@ -8,13 +8,13 @@ from django.utils import timezone
 
 from monitors import services, status_page, tasks
 from monitors.models import Check, Incident, Monitor
-from tests.conftest import MONITOR_PAYLOAD
+from tests.conftest import create_monitor
 
 pytestmark = pytest.mark.django_db
 
 
 def make_monitor(name: str) -> Monitor:
-    return Monitor.objects.create(**{**MONITOR_PAYLOAD, "name": name})
+    return create_monitor(name=name)
 
 
 def add_check(monitor: Monitor, *, ok: bool, latency_ms: int, age: timedelta) -> None:

@@ -15,7 +15,7 @@ from django.utils import timezone
 from config.celery import app
 from monitors import tasks
 from monitors.models import MAX_TIMEOUT_S, Check, Monitor
-from tests.conftest import MONITOR_PAYLOAD
+from tests.conftest import create_monitor
 
 pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("redis_db")]
 
@@ -23,10 +23,10 @@ pytestmark = [pytest.mark.django_db, pytest.mark.usefixtures("redis_db")]
 def make_monitor(
     name: str, *, interval_s: int = 30, next_check_at: datetime | None = None
 ) -> Monitor:
-    fields = {**MONITOR_PAYLOAD, "name": name, "interval_s": interval_s}
+    fields: dict[str, Any] = {"name": name, "interval_s": interval_s}
     if next_check_at is not None:
         fields["next_check_at"] = next_check_at
-    return Monitor.objects.create(**fields)
+    return create_monitor(**fields)
 
 
 @pytest.fixture
