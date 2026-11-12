@@ -14,9 +14,15 @@ from django.conf import settings
 def probe_client() -> httpx.Client:
     """For checks. Keep-alive is off: every check opens a new connection.
 
-    No timeout here: each check passes its monitor's timeout_s.
+    No timeout here: each check passes its monitor's timeout_s. Redirects are not
+    followed and proxy variables are ignored: a check connects to the address
+    ssrf.safe_address judged, and to nothing a response or the environment names.
     """
-    return httpx.Client(limits=httpx.Limits(max_keepalive_connections=0))
+    return httpx.Client(
+        limits=httpx.Limits(max_keepalive_connections=0),
+        follow_redirects=False,
+        trust_env=False,
+    )
 
 
 @cache

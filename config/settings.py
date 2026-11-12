@@ -162,6 +162,12 @@ PULSE_FAIL_THRESHOLD = env_int("PULSE_FAIL_THRESHOLD", default=3)
 PULSE_OK_THRESHOLD = env_int("PULSE_OK_THRESHOLD", default=2)
 
 
+# Checks refuse hosts on private and internal addresses (monitors/ssrf.py). Our own
+# targets are on such addresses, so they are named here. Exact hostnames, and only
+# here: nothing in the API can add one.
+PULSE_ALLOWED_PRIVATE_HOSTS = env_list("PULSE_ALLOWED_PRIVATE_HOSTS", default=[])
+
+
 # Celery
 # https://docs.celeryq.dev/en/stable/userguide/configuration.html
 CELERY_BROKER_URL = env_str("CELERY_BROKER_URL")

@@ -75,6 +75,7 @@ class Check(models.Model):
         DNS = "dns"
         WRONG_STATUS = "wrong_status"
         ASSERTION_FAILED = "assertion_failed"  # a JSON key missing or wrong
+        BLOCKED = "blocked"  # the host resolved to an address checks may not call
         ERROR = "error"
 
     # No single-column index: the (monitor, checked_at) index below starts with

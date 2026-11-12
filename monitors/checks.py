@@ -5,7 +5,7 @@ from typing import TypedDict
 
 import httpx
 
-from . import clients
+from . import clients, ssrf
 from .models import Monitor
 
 
@@ -31,14 +31,19 @@ def probe(monitor: Monitor, client: httpx.Client | None = None) -> CheckResult:
         client = clients.probe_client()
     started = time.perf_counter()
     try:
-        status_code, body = _fetch(client, monitor, started + monitor.timeout_s)
+        # On every check, not only when the monitor was created: DNS can change.
+        address = ssrf.safe_address(monitor.url)
+        status_code, body = _fetch(
+            client, monitor, address, started + monitor.timeout_s
+        )
+    except ssrf.BlockedAddress:
+        return _failed(started, "blocked")
+    except socket.gaierror:
+        return _failed(started, "dns")
+    except httpx.InvalidURL:
+        return _failed(started, "error")
     except httpx.HTTPError as exc:
-        return {
-            "ok": False,
-            "status_code": None,
-            "latency_ms": _elapsed_ms(started),
-            "error_type": _classify(exc),
-        }
+        return _failed(started, _classify(exc))
 
     if monitor.assertions:
         # Deep health checks answer 500 when any component fails; the status code
@@ -58,18 +63,30 @@ def probe(monitor: Monitor, client: httpx.Client | None = None) -> CheckResult:
 
 
 def _fetch(
-    client: httpx.Client, monitor: Monitor, deadline: float
+    client: httpx.Client, monitor: Monitor, address: str, deadline: float
 ) -> tuple[int, bytes]:
-    """Send the request and read the whole answer: (status code, body).
+    """Send the request to `address` and read the whole answer: (status code, body).
+
+    The connection goes to the address that was judged safe, not to the name: httpx
+    would look the name up again, and that answer has not been judged. The name
+    still travels in the Host header and, for https, in the TLS handshake, so
+    virtual hosts and certificates work as if the name had been used.
 
     httpx's timeout limits each wait for the next bytes, not the request as a whole,
     so a target that keeps sending a little never trips it. The deadline does:
     past it, the check stops reading and counts as a timeout.
     """
-    # django-health-check and friends only return JSON when asked for it.
-    headers = {"Accept": "application/json"} if monitor.assertions else None
+    target = httpx.URL(monitor.url)
+    headers = {"Host": target.netloc.decode("ascii")}
+    if monitor.assertions:
+        # django-health-check and friends only return JSON when asked for it.
+        headers["Accept"] = "application/json"
     with client.stream(
-        monitor.method, monitor.url, timeout=monitor.timeout_s, headers=headers
+        monitor.method,
+        target.copy_with(host=address),
+        timeout=monitor.timeout_s,
+        headers=headers,
+        extensions={"sni_hostname": target.host},
     ) as response:
         chunks = []
         for chunk in response.iter_bytes():
@@ -93,6 +110,15 @@ def _assertions_hold(body: bytes, assertions: dict[str, str]) -> bool:
     return all(parsed.get(key) == expected for key, expected in assertions.items())
 
 
+def _failed(started: float, error_type: str) -> CheckResult:
+    return {
+        "ok": False,
+        "status_code": None,
+        "latency_ms": _elapsed_ms(started),
+        "error_type": error_type,
+    }
+
+
 def _elapsed_ms(started: float) -> int:
     return round((time.perf_counter() - started) * 1000)
 
@@ -103,8 +129,6 @@ def _classify(exc: httpx.HTTPError) -> str:
     # httpx wraps the real OS error; walk the chain to find what actually failed.
     cause: BaseException | None = exc
     while cause is not None:
-        if isinstance(cause, socket.gaierror):
-            return "dns"
         if isinstance(cause, ConnectionRefusedError):
             return "connection_refused"
         cause = cause.__cause__ or cause.__context__
