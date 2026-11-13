@@ -13,7 +13,7 @@ from tests.conftest import client_for
 
 pytestmark = pytest.mark.django_db
 
-PUBLIC = {"health", "status-page", "signup", "login"}
+PUBLIC = {"health", "ready", "status-page", "signup", "login"}
 METHODS = ["get", "post", "put", "patch", "delete"]
 
 
@@ -109,6 +109,6 @@ def test_another_scheme_counts_as_no_token():
     }
 
 
-@pytest.mark.parametrize("path", ["/health", "/status"])
+@pytest.mark.parametrize("path", ["/health", "/ready", "/status"])
 def test_a_public_page_ignores_a_bad_token(path):
     assert with_header("Bearer not-a-token").get(path).status_code == 200

@@ -76,6 +76,11 @@ WSGI_APPLICATION = "config.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
+# Seconds to wait for Postgres or Redis before calling it unreachable: when
+# connecting to Postgres, anywhere, and for the Redis ping in /ready. Without it a
+# connect to a host that does not answer waits for the system's TCP timeout.
+PULSE_DEPENDENCY_TIMEOUT_S = env_int("PULSE_DEPENDENCY_TIMEOUT_S", default=2)
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -84,6 +89,7 @@ DATABASES = {
         "PASSWORD": env_str("POSTGRES_PASSWORD"),
         "HOST": env_str("POSTGRES_HOST"),
         "PORT": env_str("POSTGRES_PORT", default="5432"),
+        "OPTIONS": {"connect_timeout": PULSE_DEPENDENCY_TIMEOUT_S},
     }
 }
 
