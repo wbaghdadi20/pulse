@@ -14,18 +14,23 @@ import pytest
 from celery.signals import setup_logging
 from django.conf import settings
 
-from core.logs import LEVELS, logging_config
+from core.logs import LEVELS, ContextFilter, logging_config, request_id
+
+
+def json_formatter() -> logging.Formatter:
+    config = logging_config("INFO")
+    formatter: logging.Formatter = logging.config.DictConfigurator(
+        config
+    ).configure_formatter(config["formatters"]["json"])
+    return formatter
 
 
 def formatted(**fields: Any) -> str:
-    config = logging_config("INFO")
-    formatter = logging.config.DictConfigurator(config).configure_formatter(
-        config["formatters"]["json"]
-    )
     record = logging.makeLogRecord(
         {"name": "monitors.tasks", "levelname": "INFO", "msg": "hello", **fields}
     )
-    return str(formatter.format(record))
+    ContextFilter().filter(record)
+    return json_formatter().format(record)
 
 
 def test_a_record_is_one_json_object_with_time_level_logger_and_message():
@@ -61,6 +66,32 @@ def test_the_request_object_django_attaches_is_left_out():
     line = json.loads(formatted(request="<WSGIRequest: GET '/monitors/?after=5'>"))
 
     assert "request" not in line
+
+
+def test_a_record_logged_during_a_request_carries_its_id():
+    token = request_id.set("abc-123")
+    try:
+        line = json.loads(formatted())
+    finally:
+        request_id.reset(token)
+
+    assert line["request_id"] == "abc-123"
+
+
+def test_a_record_logged_outside_a_request_has_no_request_id_key():
+    assert "request_id" not in json.loads(formatted())
+
+
+def test_the_filter_is_on_the_handler_so_every_logger_passes_it():
+    config = logging_config("INFO")
+
+    assert config["handlers"]["stdout"]["filters"] == ["context"]
+    assert config["root"]["handlers"] == ["stdout"]
+
+
+def test_the_url_of_every_check_is_not_logged():
+    """httpx logs each request's full URL at INFO, query string included."""
+    assert logging_config("DEBUG")["loggers"]["httpx"] == {"level": "WARNING"}
 
 
 @pytest.mark.parametrize("level", LEVELS)
