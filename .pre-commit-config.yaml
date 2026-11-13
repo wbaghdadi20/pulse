@@ -5,6 +5,8 @@ repos:
       - id: end-of-file-fixer
       - id: trailing-whitespace
       - id: check-yaml
+        # Compose's !reset tag is not standard YAML.
+        exclude: ^compose\.release\.yaml$
       - id: check-added-large-files
       - id: detect-private-key
   - repo: https://github.com/astral-sh/ruff-pre-commit
