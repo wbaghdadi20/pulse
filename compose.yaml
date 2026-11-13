@@ -17,7 +17,7 @@ services:
 
   worker:
     build: .
-    command: celery -A config worker --loglevel=info
+    command: celery -A config --quiet worker
     env_file: .env
     # Longer than a check's 75 s time limit: on stop, running checks finish and
     # release their locks instead of being killed with the lock still held.
@@ -33,7 +33,7 @@ services:
 
   beat:
     build: .
-    command: celery -A config beat --loglevel=info --schedule /tmp/celerybeat-schedule
+    command: celery -A config --quiet beat --schedule /tmp/celerybeat-schedule
     env_file: .env
     depends_on:
       redis:

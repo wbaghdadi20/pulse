@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 from pathlib import Path
 
 from config.env import env_bool, env_int, env_list, env_str
+from core.logs import logging_config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -138,6 +139,13 @@ MAILERS = {
         "BACKEND": "django.core.mail.backends.console.EmailBackend",
     },
 }
+
+
+# Logging
+# https://docs.djangoproject.com/en/6.1/topics/logging/
+
+PULSE_LOG_LEVEL = env_str("PULSE_LOG_LEVEL", default="INFO")
+LOGGING = logging_config(PULSE_LOG_LEVEL)
 
 
 # Django REST framework

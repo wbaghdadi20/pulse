@@ -26,6 +26,7 @@ psycopg-binary==3.3.7
 pycparser==3.12
 PyJWT==2.15.1
 python-dateutil==2.9.0.post0
+python-json-logger==4.2.0
 redis==8.1.0
 six==1.17.0
 sqlparse==0.6.1
