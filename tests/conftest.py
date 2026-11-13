@@ -29,7 +29,11 @@ from monitors.models import Monitor
 
 # Property tests: a fast everyday profile, a thorough one for CI.
 # Select with HYPOTHESIS_PROFILE=ci pytest
-hypothesis_settings.register_profile("ci", max_examples=2000)
+# No deadline in CI: a shared runner can stall one example past 200 ms. print_blob:
+# CI keeps no example database, so the failure prints what reproduces it.
+hypothesis_settings.register_profile(
+    "ci", max_examples=2000, deadline=None, print_blob=True
+)
 hypothesis_settings.register_profile("dev", max_examples=500)
 hypothesis_settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "dev"))
 
