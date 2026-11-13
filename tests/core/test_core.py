@@ -7,7 +7,7 @@ from core.db import PercentileCont
 def test_health_is_public_and_ok():
     response = APIClient().get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "broken on purpose"}
+    assert response.json() == {"status": "ok"}
 
 
 def test_health_rejects_other_methods():
