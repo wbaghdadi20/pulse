@@ -1,5 +1,7 @@
 """Rate limiting: the counting on its own, then through the API as 429 + Retry-After."""
 
+from functools import partial
+
 import pytest
 
 from core import throttling
@@ -75,6 +77,17 @@ def test_the_counter_expires_instead_of_staying_in_the_cache_forever(monkeypatch
 
 pytestmark = pytest.mark.django_db
 WRONG = {"email": "walid@example.com", "password": "not-the-password"}
+
+
+@pytest.fixture(autouse=True)
+def one_clock_minute(monkeypatch) -> None:
+    """Every request of a test lands in the same window. On the real clock, a run
+    that crosses a minute boundary starts the count again in the middle of a test."""
+    monkeypatch.setattr(
+        throttling.RateLimitThrottle,
+        "limiter",
+        staticmethod(partial(fixed_window, now=MINUTE + 30)),
+    )
 
 
 def test_the_sixth_login_in_a_minute_is_a_429_with_retry_after(anon, settings):
