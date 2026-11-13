@@ -77,6 +77,15 @@ trick reaches the metadata address that hands out the server's credentials.
   unchanged, once per hop.
 - An allow-listed name is trusted whatever it resolves to. Whoever controls DNS
   for `flaky` inside the network controls where those checks go.
+- Since D9 `api`, Pulse itself, is on the list, so that a monitor can watch
+  `http://api:8000/ready` (ADR 0018). The list is by host, not by path: any user
+  can point a monitor at any path of Pulse's API from inside the network. Such a
+  check carries no token, so it gets what an anonymous caller gets from outside,
+  and its owner sees a status code, a latency and whether their JSON assertions
+  held, never the body itself. Each one costs Pulse a request to itself, bounded
+  by the smallest `interval_s`, 10 s.
+- `api` also has to be in `DJANGO_ALLOWED_HOSTS`: the check keeps the name in the
+  `Host` header, and Django answers 400 to a host it was not told to serve.
 - Creating a monitor answers 400 for an internal name and 201 for an unknown one.
   That difference tells a user which internal names exist. Accepted: the
   alternative is to refuse every name that does not resolve yet.

@@ -104,3 +104,9 @@ def test_out_of_range_rate_limits_are_reported(
 def test_out_of_range_proxy_count_is_reported(settings, value):
     settings.PULSE_NUM_PROXIES = value
     assert [e.id for e in pulse_errors()] == ["pulse.E009"]
+
+
+@pytest.mark.parametrize("value", [0, 11])
+def test_out_of_range_dependency_timeout_is_reported(settings, value):
+    settings.PULSE_DEPENDENCY_TIMEOUT_S = value
+    assert [e.id for e in pulse_errors()] == ["pulse.E010"]

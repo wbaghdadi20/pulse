@@ -53,5 +53,6 @@ task can run more than once and the receiver can be down.
 - If the broker is down at commit, or the worker dies mid-task, the row stays
   `pending`: the row and the message are two writes to two systems. The row is
   what makes this repairable: a periodic task that re-queues old pending rows
-  closes the gap. Not built.
+  closes the gap. Not built. Late acknowledgement would cover only the second
+  case, an hour later: ADR 0021.
 - Every delivery and failure is a row that can be queried.

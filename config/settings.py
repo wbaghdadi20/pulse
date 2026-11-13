@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 from pathlib import Path
 
 from config.env import env_bool, env_int, env_list, env_str
+from core.logs import logging_config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -45,6 +46,8 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # First, so that what the others answer and log carries the id too.
+    "core.middleware.RequestIDMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -73,6 +76,11 @@ WSGI_APPLICATION = "config.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
+# Seconds to wait for Postgres or Redis before calling it unreachable: when
+# connecting to Postgres, anywhere, and for the Redis ping in /ready. Without it a
+# connect to a host that does not answer waits for the system's TCP timeout.
+PULSE_DEPENDENCY_TIMEOUT_S = env_int("PULSE_DEPENDENCY_TIMEOUT_S", default=2)
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
@@ -81,6 +89,7 @@ DATABASES = {
         "PASSWORD": env_str("POSTGRES_PASSWORD"),
         "HOST": env_str("POSTGRES_HOST"),
         "PORT": env_str("POSTGRES_PORT", default="5432"),
+        "OPTIONS": {"connect_timeout": PULSE_DEPENDENCY_TIMEOUT_S},
     }
 }
 
@@ -138,6 +147,13 @@ MAILERS = {
         "BACKEND": "django.core.mail.backends.console.EmailBackend",
     },
 }
+
+
+# Logging
+# https://docs.djangoproject.com/en/6.1/topics/logging/
+
+PULSE_LOG_LEVEL = env_str("PULSE_LOG_LEVEL", default="INFO")
+LOGGING = logging_config(PULSE_LOG_LEVEL)
 
 
 # Django REST framework

@@ -1,14 +1,21 @@
-# Local development only: mounts the code and auto-reloads on save.
+# Local development only: builds the image's dev stage (the app plus the test, type
+# and lint tools), mounts the code and auto-reloads on save.
 services:
   api:
+    build:
+      target: dev
     command: python manage.py runserver 0.0.0.0:8000
     volumes:
       - .:/app
 
   worker:
+    build:
+      target: dev
     volumes:
       - .:/app
 
   beat:
+    build:
+      target: dev
     volumes:
       - .:/app

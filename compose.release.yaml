@@ -1,0 +1,17 @@
+# Runs a published image instead of building one. Used on top of compose.yaml:
+#
+#   PULSE_VERSION=v0.1.0 docker compose -f compose.yaml -f compose.release.yaml up -d
+#
+# `!reset null` removes the service's `build:`, so the image can only be pulled.
+services:
+  api:
+    image: ghcr.io/wbaghdadi20/pulse:${PULSE_VERSION:?set PULSE_VERSION to a released tag, such as v0.1.0}
+    build: !reset null
+
+  worker:
+    image: ghcr.io/wbaghdadi20/pulse:${PULSE_VERSION:?set PULSE_VERSION to a released tag, such as v0.1.0}
+    build: !reset null
+
+  beat:
+    image: ghcr.io/wbaghdadi20/pulse:${PULSE_VERSION:?set PULSE_VERSION to a released tag, such as v0.1.0}
+    build: !reset null
