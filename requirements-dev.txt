@@ -17,7 +17,6 @@ mdurl==0.1.2
 mutmut==3.8.1
 mypy==2.4.1
 mypy_extensions==1.2.0
-packaging==26.3
 pathspec==1.1.1
 platformdirs==4.14.5
 pluggy==1.7.0
