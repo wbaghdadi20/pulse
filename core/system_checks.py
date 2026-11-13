@@ -32,6 +32,8 @@ MAX_RATE_LIMIT_PER_MINUTE = 6000
 MAX_AUTH_RATE_LIMIT_PER_MINUTE = 60
 # Each trusted proxy is one more X-Forwarded-For entry believed; none is the safe default.
 MAX_NUM_PROXIES = 5
+# /ready asks two dependencies in turn, and a monitor waits 30 s at most for the answer.
+MAX_DEPENDENCY_TIMEOUT_S = 10
 
 
 @register()
@@ -103,6 +105,13 @@ def check_bounded_settings(
         MAX_NUM_PROXIES,
         id="pulse.E009",
         hint="Set it in .env. Count only proxies you run: each is trusted to report the client's address.",
+    )
+    errors += _in_range(
+        "PULSE_DEPENDENCY_TIMEOUT_S",
+        1,
+        MAX_DEPENDENCY_TIMEOUT_S,
+        id="pulse.E010",
+        hint="Set it in .env. Seconds to wait for Postgres or Redis before calling it unreachable.",
     )
     return errors
 
