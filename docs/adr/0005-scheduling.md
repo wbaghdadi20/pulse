@@ -42,4 +42,5 @@ changes it with no redeploy. Tasks take ids and load the row fresh.
   check that outlasts its interval, or a backlog, is queued again. This is the
   duplicate-check bug D7 fixes.
 - Celery's default acknowledges a task when a worker takes it, not when it
-  finishes. A worker killed mid-task loses that task.
+  finishes. A worker killed mid-task loses that task. Why that default is
+  kept, and what late acknowledgement would change: ADR 0021.
