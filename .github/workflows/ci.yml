@@ -86,20 +86,36 @@ jobs:
       - name: Image builds (docker build)
         run: docker build --tag pulse:ci .
 
-      - name: Image starts and answers
+      # The tests ran with the dev packages installed. This runs the image itself,
+      # which has only the runtime ones: a package filed under the wrong
+      # requirements file fails here.
+      - name: Image works (migrate, API, worker)
         run: |
-          docker run --detach --name pulse --network host \
-            --env DJANGO_SECRET_KEY --env DJANGO_ALLOWED_HOSTS \
-            --env POSTGRES_DB --env POSTGRES_USER --env POSTGRES_PASSWORD --env POSTGRES_HOST \
-            --env CELERY_BROKER_URL --env PULSE_REDIS_URL \
-            --env PULSE_WEBHOOK_SECRET --env PULSE_JWT_SECRET \
-            pulse:ci
-          curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 \
-            http://localhost:8000/health
+          env | grep -E '^(DJANGO|POSTGRES|CELERY|PULSE)_' > image.env
+          image="docker run --network host --env-file image.env"
+          request="curl --fail --silent --show-error"
+          account='{"email": "ci@example.com", "password": "a long passphrase for ci"}'
+
+          $image --rm pulse:ci python manage.py migrate --no-input
+          $image --detach --name api pulse:ci
+          $image --detach --name worker pulse:ci celery -A config --quiet worker --concurrency 1
+
+          $request --retry 10 --retry-connrefused --retry-delay 1 http://localhost:8000/ready
+          $request --json "$account" http://localhost:8000/signup
+          $request --json "$account" http://localhost:8000/login > /dev/null
+
+          for attempt in 1 2 3 4 5; do
+            if $image --rm pulse:ci celery -A config inspect ping --timeout 5; then
+              exit 0
+            fi
+          done
+          exit 1
 
       - name: Container logs
         if: always()
-        run: docker logs pulse || true
+        run: |
+          docker logs api || true
+          docker logs worker || true
 
   catcher:
     runs-on: ubuntu-latest
