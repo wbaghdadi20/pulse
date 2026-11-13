@@ -8,6 +8,7 @@ workers = env_int("WEB_CONCURRENCY", default=2)
 # A worker that has been silent this long is killed and replaced. "Check now" on a
 # monitor with the longest timeout_s (30 s) has to fit inside it.
 timeout = 60
-accesslog = "-"
 # The master process never loads Django, so it is handed the same logging setup.
+# No access log: gunicorn writes it after the request id is gone, and
+# core.middleware already logs one line per request.
 logconfig_dict = LOGGING
