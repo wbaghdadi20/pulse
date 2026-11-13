@@ -39,7 +39,14 @@ do_not_mutate = [
 ]
 # mutmut runs the tests from a copy in mutants/ (it copies tests/ and pyproject.toml
 # itself); Django needs the settings there too.
-also_copy = ["config/"]
+also_copy = [
+    "config/",
+    # tests/test_project_files.py reads these.
+    "compose.yaml",
+    "gunicorn.conf.py",
+    ".pre-commit-config.yaml",
+    "requirements-dev.txt",
+]
 
 [tool.ruff.lint.isort]
 # shop/ is a second project in this repo; name its packages so isort groups them

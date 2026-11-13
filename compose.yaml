@@ -4,6 +4,9 @@ services:
   api:
     build: .
     env_file: .env
+    # Longer than gunicorn waits for requests in flight (graceful_timeout, 30 s).
+    # Docker's default of 10 s would cut a slow "check now" off mid-request.
+    stop_grace_period: 35s
     ports:
       - "8100:8000"
     depends_on:
