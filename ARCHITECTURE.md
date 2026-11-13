@@ -148,6 +148,45 @@ flowchart LR
 
 `shop-db` and `shop-redis` are unreachable from Pulse by design.
 
+### Build and release
+
+`api`, `worker` and `beat` run one image. A pull request has to pass CI before it
+can be merged, and a version tag on `main` publishes that image.
+
+```mermaid
+flowchart LR
+    pr["<b>Pull request</b><br/>or push to main"]
+    ci["<b>CI</b><br/>[GitHub Actions: ci.yml]<br/>ruff, mypy, migrations check,<br/>pytest with Postgres and Redis<br/>as service containers,<br/>build the image and run it"]
+    tag["<b>Tag vX.Y.Z</b><br/>on main"]
+    release["<b>Release</b><br/>[GitHub Actions: release.yml]<br/>CI again on the tagged commit,<br/>then build and push"]
+    registry[("<b>ghcr.io/wbaghdadi20/pulse</b><br/>[Container registry]<br/>:vX.Y.Z and :latest")]
+    run["<b>compose.release.yaml</b><br/>api, worker and beat<br/>from a published version"]
+
+    pr --> ci
+    ci -- "green: may be merged" --> tag
+    tag --> release
+    release -- "docker push" --> registry
+    registry -- "docker pull" --> run
+```
+
+The `Dockerfile` has two targets: `runtime`, the published one, with only what
+runs, and `dev`, with the test and lint tools and the whole repository, which
+`compose.override.yaml` builds ([ADR 0019](docs/adr/0019-image-stages-and-requirements.md)).
+
+### Stopping
+
+`docker compose stop`, and so every deploy, sends SIGTERM to PID 1 of each
+container and SIGKILL when `stop_grace_period` runs out. Every command is in exec
+form, so PID 1 is the process itself and not a shell that would keep the signal.
+
+| Container | On SIGTERM                                                              | Given |
+| --------- | ----------------------------------------------------------------------- | ----- |
+| `api`     | gunicorn takes no new request and answers those in flight, for up to 30 s | 35 s  |
+| `worker`  | Celery's warm shutdown: takes no new task, finishes the running ones    | 80 s, above the 75 s limit of a check |
+| `beat`    | exits; the tick it misses is caught by the next one                     | Docker's default, 10 s |
+
+What a kill costs instead: [ADR 0021](docs/adr/0021-early-ack-and-grace-period.md).
+
 ## Level 3: components
 
 Inside the Django codebase that `api` and `worker` both run. Arrows point from
@@ -160,12 +199,17 @@ flowchart TB
     http(["HTTP request"])
     task(["Celery task message"])
 
+    subgraph around ["Around every request: Django middleware"]
+        reqid["<b>core/middleware.py</b><br/>[Django middleware]<br/>Picks the request id, returns it in<br/>X-Request-ID, logs one line per request"]
+    end
+
     subgraph gate ["Before every view: DRF defaults from settings"]
         authn["<b>accounts/authentication.py</b><br/>[DRF authentication class]<br/>Bearer token to request.user, or 401"]
         throttling["<b>core/throttling.py</b><br/>[DRF throttles]<br/>Per client address: 429 with Retry-After"]
     end
 
     subgraph entry ["Entry points: no business rules"]
+        coreviews["<b>core/views.py</b><br/>[PublicAPIView]<br/>GET /health, GET /ready"]
         accviews["<b>accounts/views.py, serializers.py</b><br/>[PublicAPIView]<br/>POST /signup, POST /login"]
         views["<b>monitors/views.py</b><br/>[DRF APIView]<br/>Parse, call a service with the caller<br/>as owner, shape the response"]
         serializers["<b>monitors/serializers.py</b><br/>[DRF serializers]<br/>Validate input, shape output"]
@@ -177,6 +221,7 @@ flowchart TB
         accservices["<b>accounts/services.py</b><br/>signup, login"]
         tokens["<b>accounts/tokens.py</b><br/>[PyJWT]<br/>issue and verify a signed token"]
         ratelimit["<b>core/ratelimit.py</b><br/>[Strategy]<br/>fixed_window: count one request"]
+        readiness["<b>core/readiness.py</b><br/>SELECT 1 on Postgres, PING on Redis,<br/>each with a timeout"]
         services["<b>monitors/services.py</b><br/>Business rules: CRUD scoped to an owner,<br/>claim_due_monitors, check_monitor,<br/>evaluate_incidents, uptime, open and resolve"]
         ssrf["<b>monitors/ssrf.py</b><br/>safe_address: resolve the host, judge<br/>every address, return the one to call"]
         statuspage["<b>monitors/status_page.py</b><br/>Build the public page in four queries<br/>from public monitors, cache it, invalidate it"]
@@ -193,10 +238,15 @@ flowchart TB
         locks["<b>monitors/locks.py</b><br/>[Redis SET NX EX, Lua]<br/>acquire, release if still ours"]
         cache["<b>Django cache framework</b><br/>[Redis backend]"]
         db["<b>core/db.py</b><br/>PercentileCont, violated_constraint"]
+        logs["<b>core/logs.py</b><br/>[logging, ContextVar, Celery signals]<br/>JSON on stdout; request id and task id<br/>added to every record"]
     end
 
+    http --> reqid
+    reqid -. "sets the request id" .-> logs
     http --> authn
     http --> throttling
+    http --> coreviews
+    coreviews --> readiness
     authn --> tokens
     authn --> accmodels
     throttling --> ratelimit
@@ -213,6 +263,7 @@ flowchart TB
     views --> statuspage
     services -. "raises MonitorNotFound,<br/>MonitorNameTaken, IncidentAlreadyOpen" .-> handler
     task --> tasks
+    task -. "task id, and the request id<br/>from the message headers" .-> logs
     tasks --> services
     tasks --> alerting
     tasks --> locks
@@ -244,10 +295,12 @@ flowchart TB
 | A request reaches a monitor only as its owner               | `services.get_monitor(pk, owner)`: the owner is a required argument and part of the query |
 | A check connects only to an address that was judged         | `probe` calls `ssrf.safe_address` and requests the address it returns, never the name |
 | The rate limit algorithm can change without touching views  | throttles are handed a `Limiter` function; `fixed_window` is the only one |
+| Every log line can be tied to the request or task it came from | one handler with `ContextFilter`; the middleware and Celery's signals set what it reads, so no call site passes an id |
+| `/health` never depends on Postgres or Redis                | it calls nothing; `/ready` is where `core/readiness.py` is asked, and a test fails if `/health` runs a query |
 
 `core/` holds what any app could use (errors, pagination, the exception handler,
 database helpers, startup checks of settings, the public view base class, rate
-limiting). `accounts/` is users and tokens. `config/` is the project: settings,
+limiting, the logging setup, the request id middleware, `/health` and `/ready`). `accounts/` is users and tokens. `config/` is the project: settings,
 URLs, the Celery app, typed environment readers.
 
 ## Data model
@@ -579,6 +632,11 @@ stateDiagram-v2
 | [0014](docs/adr/0014-ownership.md) | A monitor is looked up together with its owner |
 | [0015](docs/adr/0015-ssrf-guard.md) | Checks resolve the host themselves and connect only to an address they judged |
 | [0016](docs/adr/0016-rate-limiting.md) | A fixed-window rate limit, counted in Redis, applied by DRF throttles |
+| [0017](docs/adr/0017-json-logs-and-request-ids.md) | JSON logs on stdout, and one id that follows a request into the worker |
+| [0018](docs/adr/0018-health-and-readiness.md) | `/health` asks nothing of the dependencies, `/ready` asks them |
+| [0019](docs/adr/0019-image-stages-and-requirements.md) | One Dockerfile with a dev and a runtime target, and requirements split the same way |
+| [0020](docs/adr/0020-ci-and-releases.md) | Every pull request passes CI; a version tag publishes the image |
+| [0021](docs/adr/0021-early-ack-and-grace-period.md) | Tasks are acknowledged when taken; stopping waits for them instead |
 
 ## Known limits
 
@@ -596,4 +654,6 @@ stateDiagram-v2
 | Checks do not follow redirects | a URL that redirects records the 3xx | not scheduled: judge every hop, ADR 0015 |
 | The rate limit is a fixed window per client address | twice the limit across a minute boundary; many addresses get many counts | accepted: ADR 0016. A proxy in front is the next layer |
 | No web UI for the data | rows are read with `manage.py shell` or `psql` | accepted: ADR 0013 says how to bring the admin back |
-| One `requirements.txt` | test and lint tools ship in the production image | D9 |
+| Pulse cannot alert about its own Postgres | with it down nothing is queued or recorded, so a monitor on its own `/ready` stays silent. Redis carries the queue, so the same is expected there; only Postgres was measured | not scheduled: an outside watcher or a heartbeat, ADR 0018 |
+| A release is rebuilt from the tag, not promoted from the CI build | the published image could differ from the one that was tested | not scheduled: ADR 0020 |
+| The image is built for linux/amd64 only | on an arm64 machine it runs emulated or not at all | not scheduled: a second platform in the release build |

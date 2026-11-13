@@ -30,7 +30,7 @@ credentials at all.
   `PULSE_JWT_TTL_SECONDS`). `accounts.authentication.JWTAuthentication` reads it
   from `Authorization: Bearer <token>`.
 - `IsAuthenticated` is the default for every view. A view is public only by
-  subclassing `core.views.PublicAPIView`: `/health`, `/status`, `/signup`, `/login`.
+  subclassing `core.views.PublicAPIView`: `/health`, `/ready` (since D9), `/status`, `/signup`, `/login`.
 - A missing, malformed, expired or forged token, or one whose account was deleted,
   answers 401 with `WWW-Authenticate: Bearer`.
 - An unknown email and a wrong password get the same 401 and the same body, and
@@ -134,8 +134,9 @@ How it decides:
 2. Every address is judged. It is forbidden if it is private, loopback,
    link-local, reserved or multicast (the ticket's five), or not globally routable.
 3. If any address is forbidden, the host is refused, unless its name is in
-   `PULSE_ALLOWED_PRIVATE_HOSTS` (`flaky,shop`). That list comes from the
-   environment; nothing in the API can add to it.
+   `PULSE_ALLOWED_PRIVATE_HOSTS` (`flaky,shop`, and since D9 `api`, so Pulse can
+   monitor its own `/ready`). That list comes from the environment; nothing in
+   the API can add to it.
 4. The check connects to the address that was judged, not to the name, so a
    second DNS answer cannot differ from the first (DNS rebinding). The name still
    goes in the `Host` header and the TLS handshake.
@@ -257,10 +258,26 @@ returned as a plain monitor name.
 ## Secrets
 
 `.env` has never been committed. `git log -p --all | grep -iE "password|secret|token"`
-matches 335 lines, all of them names, placeholders (`change-me`) or test values.
+matched 335 lines on D8, all of them names, placeholders (`change-me`) or test
+values. D9 adds more of the same kind: CI's throwaway values and test strings.
 One real-looking value is in the history: the `django-insecure-...` key that
 `startproject` generates, committed and replaced by `DJANGO_SECRET_KEY` on the
 first day. It is not in use.
+
+### In the logs and in CI
+
+The logs are JSON on stdout and are read by whoever operates Pulse, so they must
+not become a second place where secrets live. Never logged: query strings,
+request headers (the `Authorization` token among them) and request bodies (the
+password on `/login` and `/signup`). The line per request has the path only;
+monitors are logged by id; httpx's line per outgoing request, which has the full
+URL, is off. `tests/core/test_request_id.py` checks that a password, a token and a
+query string sent to the API appear in no line.
+
+`.github/workflows/ci.yml` contains values named like secrets
+(`DJANGO_SECRET_KEY: ci-only-not-a-secret`). They configure a database and a
+Redis that exist for one run. The release logs in to ghcr.io with the workflow's
+own `GITHUB_TOKEN`, and only the publishing job has `packages: write`.
 
 ## What is still open
 
@@ -271,6 +288,9 @@ first day. It is not in use.
 | Redirects are not followed | a monitor of a URL that redirects records the 3xx. Following them safely means judging every hop; see [ADR 0015](docs/adr/0015-ssrf-guard.md) |
 | Creating a monitor for an internal name answers 400, an unknown name 201 | the difference tells a user which internal names resolve |
 | An allow-listed hostname is trusted whatever it resolves to | whoever controls DNS for `flaky` or `shop` inside the network controls where those checks go |
+| `api` is allow-listed, by host and not by path | any user can point a monitor at any path of Pulse's own API from inside the network. The check carries no token, so it gets what an anonymous caller gets, and each one costs Pulse a request to itself. See [ADR 0015](docs/adr/0015-ssrf-guard.md) |
+| `/ready` is public | anyone can learn that Postgres or Redis is down, and each call opens a connection to both. The reason for a failure is logged, not returned |
+| A caller chooses its own request id | two requests can share one, and a caller can make its lines look like part of another request's. Only ids of 1 to 64 characters from `[A-Za-z0-9._-]` are accepted |
 | The fixed window resets on the minute | 5 attempts at :59 and 5 at :00 are all allowed: twice the limit across a boundary |
 | Limits are per address | users behind one NAT share a count; an attacker with many addresses gets many counts |
 | No lockout per account | see below |
