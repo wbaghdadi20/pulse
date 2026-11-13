@@ -821,8 +821,9 @@ sleep 5; time docker compose stop worker
 | 80 s (the setting)  | 16.8 s      | 0             | finished and saved, 20,005 ms  | released                |
 | 5 s                 | 5.4 s       | 137 (SIGKILL) | no row                         | left, 79 s still to run |
 
-With 80 s, the worker's log (`worker: Warm shutdown` is printed by Celery, not
-logged, so it is the one plain line):
+With 80 s, the worker's log, reduced to time and message (`worker: Warm shutdown`
+is printed by Celery, not logged, so in the real output it is the one line that
+is not JSON):
 
 ```
 08:03:39 Task monitors.tasks.run_check[229b3530-...] received
