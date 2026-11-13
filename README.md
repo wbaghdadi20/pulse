@@ -56,13 +56,14 @@ was attacked and fixed: [SECURITY.md](SECURITY.md).
 6. Check it works:
 
    ```bash
-   curl -i http://localhost:8100/health
+   curl -i http://localhost:8100/ready
    ```
 
-   Expected: `HTTP/1.1 200 OK` with `{"status": "ok"}`.
+   Expected: `HTTP/1.1 200 OK` with
+   `{"status": "ok", "checks": {"database": "ok", "redis": "ok"}}`.
 
-7. Create an account and log in. Everything except `/health` and `/status` needs
-   the token:
+7. Create an account and log in. Everything except `/health`, `/ready` and
+   `/status` needs the token:
 
    ```bash
    curl -X POST localhost:8100/signup -H 'Content-Type: application/json' \
@@ -111,14 +112,15 @@ alongside other local stacks. The `shop` target is a separate Compose project
 
 ## API
 
-Built with Django REST framework. The first four endpoints are public. Every
+Built with Django REST framework. The first five endpoints are public. Every
 other one needs `Authorization: Bearer <token>` and only ever sees the caller's
 own monitors: without a valid token it answers 401, and for someone else's
-monitor 404.
+monitor 404. Every response carries an `X-Request-ID` header (see _Logs_).
 
 | Method + URL                                | Does                                              | Success | Errors        |
 | ------------------------------------------- | ------------------------------------------------- | ------- | ------------- |
-| `GET /health`                               | liveness check                                    | 200     |               |
+| `GET /health`                               | liveness: the process answers                     | 200     |               |
+| `GET /ready`                                | readiness: Postgres and Redis answer too          | 200     | 503           |
 | `GET /status`                               | public status page: state, 90-day uptime, p95, latest incidents of public monitors | 200 |         |
 | `POST /signup`                              | create an account: `email`, `password`            | 201     | 400, 409, 429 |
 | `POST /login`                               | exchange `email` and `password` for a token       | 200     | 400, 401, 429 |
@@ -668,6 +670,223 @@ Without the cache every request runs the 0.4 s aggregate and two workers serve
 request is one Redis read. The cached p99 is the stampede: the first 50 requests
 all missed and all built the page.
 
+## Logs
+
+Every process (`api`, `worker`, `beat`) writes one JSON object per line to stdout,
+where Docker collects it ([ADR 0017](docs/adr/0017-json-logs-and-request-ids.md)).
+
+```bash
+docker compose logs -f api worker                              # as written
+docker compose logs --no-log-prefix api | jq -R 'fromjson?'    # readable
+docker compose logs --no-log-prefix worker | jq -R -c 'fromjson? | select(.level == "ERROR")'
+```
+
+`jq -R 'fromjson?'` skips the few lines that are not JSON, such as runserver's
+start-up banner in development.
+
+| Key                                         | On                                                        |
+| ------------------------------------------- | --------------------------------------------------------- |
+| `time`, `level`, `logger`, `message`        | every line                                                |
+| `request_id`                                | every line written while a request is served, and by a task that request queued |
+| `task_id`, `task`                           | every line written inside a Celery task                   |
+| `method`, `path`, `status`, `duration_ms`   | `request finished`, one per request                       |
+| `exc_info`                                  | a line that logs an exception: the traceback, as one string |
+
+`PULSE_LOG_LEVEL` sets the level for all three.
+
+### Following one request
+
+Each request gets an id: the caller's `X-Request-ID` if it sent one of 1 to 64
+characters from `[A-Za-z0-9._-]`, otherwise a new uuid4. It comes back in the
+response's `X-Request-ID` header and is on every line the request causes,
+including in the worker. Here the third failed "check now" opens an incident, and
+the alert it queues is delivered by the worker under the same id:
+
+```bash
+curl -X POST localhost:8100/monitors/8/check/ -H "Authorization: Bearer $TOKEN" \
+  -H 'X-Request-ID: demo-check-3'
+docker compose logs --no-log-prefix api worker | jq -R -c 'fromjson? | select(.request_id == "demo-check-3")'
+```
+
+```json
+{"level": "INFO", "logger": "core.middleware", "message": "request finished", "method": "POST", "path": "/monitors/8/check/", "status": 200, "duration_ms": 86, "request_id": "demo-check-3", "time": "2026-11-13T08:02:47.486868+00:00"}
+{"level": "INFO", "logger": "monitors.tasks", "message": "alert 3 sent: opened", "request_id": "demo-check-3", "task_id": "7dbfae3c-c642-4c6e-a636-5b15427f683f", "task": "monitors.tasks.send_alert", "time": "2026-11-13T08:02:47.497594+00:00"}
+```
+
+A scheduled check was queued by beat, not by a request, so its lines have a
+`task_id` and no `request_id`.
+
+### What is never logged
+
+Query strings, request headers and request bodies: that is where tokens,
+passwords and keys travel. The request line has the path only. Monitors are
+logged by id, and httpx's own line per outgoing request, which has the full URL,
+is turned off. `tests/core/test_request_id.py` logs in and makes a request with a
+token and a query string, then checks none of the three is in any line.
+
+## Health and readiness
+
+|                    | `GET /health`                         | `GET /ready`                                        |
+| ------------------ | ------------------------------------- | --------------------------------------------------- |
+| Asks               | nothing                               | `SELECT 1` on Postgres, `PING` on Redis             |
+| 200 means          | the process answers                   | and it can do its job                               |
+| Otherwise          | no answer at all                      | 503, with the failed dependency named               |
+| For                | whatever restarts a dead process      | whatever decides to send traffic, or to tell someone |
+
+```bash
+$ curl -s localhost:8100/ready
+{"status":"ok","checks":{"database":"ok","redis":"ok"}}
+$ docker compose stop postgres
+$ curl -s -w ' [%{http_code}]' localhost:8100/ready
+{"status":"unavailable","checks":{"database":"failed","redis":"ok"}} [503]
+$ curl -s -o /dev/null -w '%{http_code}' localhost:8100/health
+200
+```
+
+`/health` must not check the database. If it did, a database blip would make a
+healthy process look dead, and whatever restarts dead processes would restart it,
+which fixes nothing and adds an outage ([ADR 0018](docs/adr/0018-health-and-readiness.md)).
+
+A dependency that hangs must not hang `/ready`. Each check gives up after
+`PULSE_DEPENDENCY_TIMEOUT_S` (2 s). Measured: 0.01 s with both up, 2 s for a
+paused container, 4 s for a stopped one (the name lookup is slow to fail), 8 s
+with both stopped. The reason for a failure is in the log, with its traceback and
+the request id, and not in the response: `/ready` is public.
+
+### Pulse watches itself
+
+`api` is in `PULSE_ALLOWED_PRIVATE_HOSTS` and in `DJANGO_ALLOWED_HOSTS`
+(`.env.example`), so a monitor can point at Pulse's own readiness:
+
+```bash
+curl -X POST localhost:8100/monitors/ -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "pulse-ready", "url": "http://api:8000/ready", "interval_s": 10, "timeout_s": 10}'
+```
+
+**Stopping the API** (`docker compose stop api`, 57 s) is noticed:
+
+| Time     | What Pulse recorded                                                |
+| -------- | ------------------------------------------------------------------ |
+| 08:00:40 | `api` stopped                                                      |
+| 08:00:54 | first failed check, `dns`; four more follow, 10 s apart            |
+| 08:01:14 | third failure: incident opened                                     |
+| 08:01:15 | `incident.opened` in the catcher                                   |
+| 08:01:37 | `api` started                                                      |
+| 08:01:50 | second good check: incident resolved, `incident.resolved` with `downtime_seconds: 36` |
+
+**Stopping Postgres** (`docker compose stop postgres`, 70 s) is not:
+
+| What                                     | Result                                                        |
+| ---------------------------------------- | ------------------------------------------------------------- |
+| `/ready`, asked from outside             | 503, `"database": "failed"`, the whole time                   |
+| `/health`                                | 200                                                           |
+| beat's tick in the worker                | failed six times: `OperationalError: failed to resolve host 'postgres'` |
+| Checks recorded for `pulse-ready`        | none between 07:59:00 and 08:00:10                            |
+| Failed checks, incidents, alerts         | 0, 0, 0                                                       |
+| After `docker compose start postgres`    | `/ready` 200, checks resume, nothing says there was an outage |
+
+The scheduler claims due monitors from Postgres, and a check, an incident and an
+alert are all rows in Postgres. With it down there is nothing to queue and nowhere
+to write. Pulse can report that its API is gone; it cannot report that its own
+database is, because that is the one thing it needs in order to report anything.
+`/ready` is the right signal, but something outside Pulse has to be the one
+asking: a second instance elsewhere, or a heartbeat to an outside service that
+alerts when the heartbeat stops.
+
+## Stopping without losing work
+
+Every deploy stops the worker and starts a new one. `docker compose stop` sends
+SIGTERM to PID 1 of each container, waits `stop_grace_period`, then sends SIGKILL.
+On SIGTERM Celery does a _warm shutdown_: it takes no new task, finishes the ones
+that are running, and exits. That saves the work only if the grace period is
+longer than the longest task, and if the signal reaches Celery at all.
+
+### The grace period
+
+`flaky` answering after 20 s, one check queued by hand, the worker stopped 5 s
+into it:
+
+```bash
+curl -X POST localhost:8200/mode -H 'Content-Type: application/json' \
+  -d '{"mode": "slow", "slow_seconds": 20}'
+docker compose stop beat        # nothing else gets queued while measuring
+docker compose exec api python manage.py shell -c \
+  "from monitors.tasks import run_check; run_check.delay(8)"
+sleep 5; time docker compose stop worker
+```
+
+| `stop_grace_period` | `stop` took | Exit code     | The check                      | Its lock                |
+| ------------------- | ----------- | ------------- | ------------------------------ | ----------------------- |
+| 80 s (the setting)  | 16.8 s      | 0             | finished and saved, 20,005 ms  | released                |
+| 5 s                 | 5.4 s       | 137 (SIGKILL) | no row                         | left, 79 s still to run |
+
+With 80 s, the worker's log (`worker: Warm shutdown` is printed by Celery, not
+logged, so it is the one plain line):
+
+```
+08:03:39 Task monitors.tasks.run_check[229b3530-...] received
+worker: Warm shutdown (MainProcess)
+08:03:59 monitor 8 ok=True error=None
+08:03:59 Task monitors.tasks.run_check[229b3530-...] succeeded in 20.019698635005625s: None
+```
+
+The stop returned when the check was done, not after 80 s. With 5 s the check was
+killed with nothing saved, and its lock outlived it: the next check of that
+monitor logged `monitor 8 is already being checked, skipping`, and the monitor
+went unchecked until the lock expired.
+
+So the grace period has to be longer than the longest task. Celery kills a
+`run_check` at 75 s (`CHECK_TIME_LIMIT_S`: twice the largest `timeout_s`, plus a
+margin), which makes 80 s enough whatever a target does. `api` gets 35 s, because
+gunicorn waits up to 30 s for requests in flight. `tests/test_project_files.py`
+fails if either number drops below what it has to exceed.
+
+### PID 1
+
+The signal goes to PID 1 only. If that is a shell, Celery never hears it: the
+shell does not pass SIGTERM on, and as PID 1 it ignores a signal it has no handler
+for. Docker then waits the whole grace period and kills everything. Timing
+`docker compose stop worker` on an idle worker:
+
+| `command:` for the worker                                    | PID 1    | `stop` took | Exit code |
+| ------------------------------------------------------------ | -------- | ----------- | --------- |
+| `["sh", "-c", "celery -A config --quiet worker; echo done"]` | `sh`     | 80.4 s      | 137       |
+| `["sh", "-c", "celery -A config --quiet worker"]`            | `sh`     | 80.4 s      | 137       |
+| `celery -A config --quiet worker` (the setting)              | `celery` | 2.2 s       | 0         |
+
+Pulse was already on the right side of this. A `command:` string in Compose is
+split into arguments, not handed to a shell, and the `Dockerfile` uses the JSON
+form of `CMD`. The shell form to avoid is the Dockerfile's `CMD celery -A config
+worker`, which Docker runs as `/bin/sh -c "..."`. To see what PID 1 is:
+
+```bash
+docker compose exec worker sh -c 'tr "\0" " " < /proc/1/cmdline'
+```
+
+### When the worker is killed anyway
+
+A crash, an out-of-memory kill or a lost machine gives no grace period. Celery
+acknowledges a message when a worker takes it, before running it, so the broker
+considers a killed task done and never delivers it again:
+
+- a `run_check` that was running is lost. The next interval's check replaces it,
+  after the dead check's lock has expired (up to 90 s);
+- a `send_alert` that was running leaves its alert `pending`, and nobody is told.
+
+`task_acks_late` would acknowledge after the task returns instead. A killed
+worker's message then stays unacknowledged, and Redis hands it out again once the
+visibility timeout has passed, one hour by default. For `run_check` that changes
+nothing: its message expires after `interval_s` and is dropped. For `send_alert`
+the alert would go out, an hour late.
+
+Late acknowledgement means a task can run twice: once before the kill and once
+after redelivery. That is safe only for a task that is idempotent, which is why
+D6 made `send_alert` stop unless its row is still `pending`, and why the receiver
+drops a repeat by its `alert_id`. Pulse keeps the default and relies on the grace
+period; why, and what would repair the lost alert better:
+[ADR 0021](docs/adr/0021-early-ack-and-grace-period.md).
+
 ## flaky: a target you control
 
 `flaky` is a tiny FastAPI app in `flaky/` that Pulse can monitor at
@@ -771,7 +990,10 @@ All settings come from environment variables in `.env` (never committed).
 | ---------------------- | --------------------------------------------------------------------- |
 | `DJANGO_SECRET_KEY`    | Secret used by Django for signing. Required.                          |
 | `DJANGO_DEBUG`         | `true` for local development, `false` otherwise. Defaults to `false`. |
-| `DJANGO_ALLOWED_HOSTS` | Comma-separated hostnames Django will serve.                          |
+| `DJANGO_ALLOWED_HOSTS` | Comma-separated hostnames Django will serve. Include `api` if Pulse monitors itself. |
+| `WEB_CONCURRENCY`      | gunicorn worker processes in `api`. Defaults to `2`.                  |
+| `PULSE_LOG_LEVEL`      | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`, for every process. Defaults to `INFO`. |
+| `PULSE_DEPENDENCY_TIMEOUT_S` | Seconds to wait for Postgres (any connection) or Redis (the `/ready` ping) before calling it unreachable. 1–10, default `2`. |
 | `POSTGRES_DB`          | Database name.                                                        |
 | `POSTGRES_USER`        | Database user.                                                        |
 | `POSTGRES_PASSWORD`    | Database password.                                                    |
@@ -788,7 +1010,7 @@ All settings come from environment variables in `.env` (never committed).
 | `PULSE_STATUS_CACHE_SECONDS` | Seconds `/status` is served from the cache. 0–300, default `15`; `0` turns the cache off. |
 | `PULSE_JWT_SECRET`     | Signs access tokens. Required, at least 32 characters, different from `DJANGO_SECRET_KEY`. Changing it logs everyone out. |
 | `PULSE_JWT_TTL_SECONDS` | Seconds a token is valid after `/login`. 60–86400, default `3600`. |
-| `PULSE_ALLOWED_PRIVATE_HOSTS` | Comma-separated hostnames on private addresses that monitors may point at: your own targets (`flaky,shop`). Default: none. |
+| `PULSE_ALLOWED_PRIVATE_HOSTS` | Comma-separated hostnames on private addresses that monitors may point at: your own targets, and `api` for Pulse itself (`flaky,shop,api`). Default: none. |
 | `PULSE_RATE_LIMIT_PER_MINUTE` | Requests per minute from one client address, on the API. 1–6000, default `60`. |
 | `PULSE_AUTH_RATE_LIMIT_PER_MINUTE` | The same, on `/login` and `/signup` together. 1–60, default `5`. |
 | `PULSE_NUM_PROXIES`    | Proxies in front of Pulse that add to `X-Forwarded-For`. 0–5, default `0`: the header is ignored. |
@@ -808,6 +1030,16 @@ variable's name. `tests/config/` covers them with Hypothesis.
   `column "owner_id" ... contains null values`): the user model changed and
   monitors now need an owner, so a database from before D8 cannot be migrated.
   Reset it with `docker compose down -v`, start the stack and run `migrate` again.
+- **A monitor on `http://api:8000/ready` reports `wrong_status` with 400**: `api`
+  is missing from `DJANGO_ALLOWED_HOSTS`. `blocked` means it is missing from
+  `PULSE_ALLOWED_PRIVATE_HOSTS`.
+- **`denied` when pulling `ghcr.io/wbaghdadi20/pulse`**: the package is still
+  private. See _Releases_.
+- **`denied: permission_denied` in the release workflow**: the job that pushes
+  needs `permissions: packages: write`.
+- **CI fails on something that passes locally**: read the failing step's log. The
+  usual cause is an environment variable, or a host that is `localhost` on the
+  runner and a service name in Compose.
 - **401 on every request**: the token expired (one hour by default). Log in again.
 - **429 Too Many Requests**: the rate limit. `Retry-After` says how many seconds
   are left in the minute.
@@ -815,6 +1047,66 @@ variable's name. `tests/config/` covers them with Hypothesis.
   when its data volume is first created. If you changed the password in `.env` later,
   reset the database with `docker compose down -v` (deletes all data), then
   `docker compose up -d --wait` and run `migrate` again.
+
+## Releases
+
+A release is a version tag on `main`. Pushing the tag runs
+`.github/workflows/release.yml`: the CI checks again, on the tagged commit, then
+the image is built and pushed to GitHub's registry as
+`ghcr.io/wbaghdadi20/pulse:<tag>` and `:latest`
+([ADR 0020](docs/adr/0020-ci-and-releases.md)).
+
+### Cutting one
+
+```bash
+git switch main && git pull
+git tag -a v0.2.0 -m "v0.2.0"
+git push origin v0.2.0
+```
+
+Tag `main`, after the pull request is merged. "Rebase and merge" gives the
+commits new hashes, so a tag made on the branch names commits that never reach
+`main`. Never move or reuse a tag: a published version would change under whoever
+runs it. A bad release is followed by the next patch version.
+
+### Which number
+
+Versions are `MAJOR.MINOR.PATCH`
+([semantic versioning](https://semver.org/)). Ask what someone running the
+previous version has to do:
+
+| They have to                                                            | Bump  | Examples                                                           |
+| ----------------------------------------------------------------------- | ----- | ------------------------------------------------------------------ |
+| nothing                                                                 | PATCH | a bug fix, a faster query, a dependency update                     |
+| nothing, but there is something new to use                              | MINOR | a new endpoint, an optional field, a setting with a default        |
+| change a client, their `.env`, their alert receiver, or reset their data | MAJOR | a removed or renamed field, a new required variable, a changed alert payload, a migration that cannot run on existing data |
+
+While the version starts with `0.` nothing is promised stable yet, and a breaking
+change bumps MINOR. A tag such as `v0.2.0-rc.1` is a pre-release: it is published
+under its own name and `latest` does not move.
+
+### Running one
+
+`compose.release.yaml` replaces the `build:` of `api`, `worker` and `beat` with the
+published image. `catcher` and `flaky` are test tools, not part of a release, and
+are still built locally.
+
+```bash
+export PULSE_VERSION=v0.1.0
+docker compose -f compose.yaml -f compose.release.yaml pull api worker beat
+docker compose -f compose.yaml -f compose.release.yaml up -d --wait
+docker compose -f compose.yaml -f compose.release.yaml exec api python manage.py migrate
+docker compose -f compose.yaml -f compose.release.yaml images api   # which version is running
+```
+
+To roll back, set `PULSE_VERSION` to the previous tag and run `up -d` again. That
+changes the code, not the database: migrations the newer version applied stay
+applied.
+
+A new package on ghcr.io is private, even when the repository is public. Until
+its visibility is changed (the package's page on GitHub, _Package settings_,
+_Change visibility_), pulling needs `docker login ghcr.io` with a token that has
+the `read:packages` scope.
 
 ## Development
 
@@ -825,13 +1117,76 @@ Install the git hooks once after cloning (requires [pre-commit](https://pre-comm
 Run all checks manually with `pre-commit run --all-files`.
 The hooks run ruff and mypy (strict, with django-stubs). Run the type checker alone with `mypy`.
 
-`compose.override.yaml` is merged automatically by Docker Compose. It mounts the
-code into the `api` container and runs Django's `runserver`, which reloads on save.
-To run the production-style gunicorn setup instead:
+`compose.override.yaml` is merged automatically by Docker Compose. It builds the
+image's `dev` stage, mounts the code into the `api` container and runs Django's
+`runserver`, which reloads on save. To run the image that is published instead,
+with gunicorn:
 
     docker compose -f compose.yaml up --build -d --wait
 
 Passing -f compose.yaml tells Compose to use only that file, so the override isn't merged in.
+
+### The image
+
+One `Dockerfile`, two images
+([ADR 0019](docs/adr/0019-image-stages-and-requirements.md)):
+
+| Target    | Contains                                                         | Built by                                  |
+| --------- | ---------------------------------------------------------------- | ----------------------------------------- |
+| `runtime` | the packages in `requirements.txt` and the four app packages     | `compose.yaml`, CI, the release           |
+| `dev`     | the same, plus `requirements-dev.txt` and the whole repository   | `compose.override.yaml`                   |
+
+A `builder` stage installs the runtime packages into `/venv`; `runtime` copies
+that one directory and the code onto a clean `python:3.14-slim`. Both run as the
+user `app`, not root (`docker compose exec api whoami`), and `api`, `worker` and
+`beat` are the same image started with different commands.
+
+| `docker images`                         | On disk | Compressed |
+| --------------------------------------- | ------- | ---------- |
+| before: one stage, everything installed | 541 MB  | 106 MB     |
+| `runtime`                               | 386 MB  | 73.8 MB    |
+| `dev`                                   | 595 MB  | 121 MB     |
+
+The saving is the test, type and lint tools (mypy alone is 61 MB) and the files
+that are no longer copied. Every dependency installs as a ready-made wheel, so the
+builder stage has no compiler to leave behind.
+
+A new dependency goes into one of two files, each pinned:
+
+```bash
+pip install <package>
+pip freeze            # copy the new lines into the file they belong to
+```
+
+`requirements.txt` if the app imports it, `requirements-dev.txt` (which starts
+with `-r requirements.txt`) if only tests or tools do. The tests cannot notice a
+package on the wrong side, because they run with both installed; CI's last step
+runs the built image for that reason.
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request and every push to `main`
+([ADR 0020](docs/adr/0020-ci-and-releases.md)). One job, in this order, stopping
+at the first failure:
+
+| Step                         | Runs                                                                 |
+| ---------------------------- | -------------------------------------------------------------------- |
+| Lint (ruff)                  | `ruff check .` and `ruff format --check .`                           |
+| Types (mypy)                 | `mypy`                                                               |
+| Migrations match the models  | `manage.py makemigrations --check --dry-run`                         |
+| Tests (pytest)               | `pytest -n auto --cov`, with `HYPOTHESIS_PROFILE=ci`                 |
+| Image builds (docker build)  | `docker build .`                                                     |
+| Image works                  | migrate, start the API and a worker from that image, `/ready`, sign up, log in, ping the worker |
+
+Postgres and Redis run as service containers. The steps run on the runner itself,
+where those are on `localhost` and not under their Compose names; the workflow sets
+`POSTGRES_HOST`, `CELERY_BROKER_URL` and `PULSE_REDIS_URL` accordingly. A second
+job runs the catcher's tests. The check `ci` is required on `main`: a red pull
+request cannot be merged.
+
+To reproduce a CI failure, read the failing step's log in the pull request's
+_Checks_ tab. When it passes locally and fails there, the difference is nearly
+always an environment variable or a host name.
 
 ### Tests
 
@@ -855,8 +1210,9 @@ token), `monitor`, `fake_check`, and `dns`, which replaces the resolver for ever
 test so none looks a name up for real. Keeping tests out of
 the app packages also keeps them out of the coverage report's `source`.
 
-Tests run inside the `api` container because they need the same environment and
-database host as the app. `pytest-django` creates a separate `test_pulse` database
+Locally, tests run inside the `api` container because they need the same
+environment and database host as the app. CI runs the same suite on its runner,
+with Postgres and Redis on `localhost` (see _Continuous integration_). `pytest-django` creates a separate `test_pulse` database
 and wraps each test in a transaction that is rolled back, so tests never touch
 development data and always start empty.
 
@@ -912,6 +1268,7 @@ mutants, 0 survivors**, so the scope is the whole `monitors/` and `core/` source
 | after the JSON-assertion feature too  | 436     | 54       | 88%    |
 | D6: Celery tasks and alerts added     | 547     | 76       | 86%    |
 | D6: after pinning the alert payload   | 547     | 63       | 88%    |
+| D9: everything since, `accounts/` too | 1447    | 120      | 92%    |
 
 The 13 D6 survivors killed by one test were the alert payload keys and the
 `Content-Type` header: the webhook contract was sent but never asserted. The 8 that
