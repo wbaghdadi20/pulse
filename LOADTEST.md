@@ -53,31 +53,72 @@ Locust rounds percentiles above 100 ms to the nearest 10.
 
 ### Running it
 
-**The short way.** Four `make` targets run the steps below, and print each
-command as they run it:
+Typed in the repository's root folder, in this order. Each `make` target prints
+the commands it runs.
+
+**1. Switch Pulse to load-test mode.**
 
 ```bash
 make loadtest-up
+```
+
+It stops `worker` and `beat` and replaces `api` with the runtime image under
+gunicorn, on the database `pulse_loadtest`. **From now until step 6, Pulse runs
+no checks and sends no alerts.**
+
+**2. Create and fill the load-test database.** Needed once per machine. Run
+again, it finds the data and changes nothing.
+
+```bash
 make loadtest-seed
+```
+
+It ends with `50 accounts, 500 monitors (20 public), 4666100 checks, 120 incidents`,
+or with `Already seeded.`
+
+**3. Run the test.** Two minutes. The first time it installs Locust first.
+
+```bash
 make loadtest
+```
+
+The table at the end has requests per second, the percentiles and the failures
+per endpoint. Other numbers: `make loadtest USERS=100 RATE=10 DURATION=5m`.
+
+**4. Optional: another number of gunicorn workers**, then step 3 again.
+`{1|2|4|8|16}` are the values measured here; type one.
+
+```bash
+make loadtest-up WORKERS=8
+make loadtest
+```
+
+**5. Optional: look at the query plan** of the uptime query on the seeded data.
+_Finding the bottleneck_ below says how to read it.
+
+```bash
+make explain DB=pulse_loadtest MONITOR=123 DAYS=30
+```
+
+**6. Always last: back to development.** This undoes step 1: `api` is the
+development server again, and `worker` and `beat` start.
+
+```bash
 make loadtest-down
 ```
 
-| Target | Steps below | With other values |
-| --- | --- | --- |
-| `make loadtest-up` | 1 and 2 | `make loadtest-up WORKERS={1\|2\|4\|8\|16}` is step 8 |
-| `make loadtest-seed` | 3, 4 and 5. Needed once | |
-| `make loadtest` | 6 (the first time) and 7 | `make loadtest USERS=100 RATE=10 DURATION=5m` |
-| `make loadtest-down` | 10 | |
+If step 6 is forgotten, nothing is checked and no incident can open. `make
+demo-ready` says so: `FAIL  api is in load-test mode. Run: make loadtest-down`.
 
-`make loadtest-seed` and `make loadtest` first ask the running `api` container
-which database it uses, and stop with "First: make loadtest-up" if it is not
-`pulse_loadtest`. Typed by hand, steps 4, 5 and 7 have no such check. Step 9 is
-`make psql DB=pulse_loadtest`.
+Steps 2 and 3 first ask the running `api` container which database it uses, and
+stop with `First: make loadtest-up` if it is not `pulse_loadtest`. The database
+`pulse_loadtest` is not deleted by any of this; _The same by hand_ ends with how.
 
-**The long way**, which is what those targets do. Every command is typed on your
-machine, in the repository's root folder. Nothing is abbreviated: each line can
-be pasted as it is.
+### The same by hand
+
+What those targets do, for a machine without `make` or for reading. Every command
+is typed on your machine, in the repository's root folder. Nothing is abbreviated:
+each line can be pasted as it is. The steps here are numbered on their own.
 
 How to read them:
 

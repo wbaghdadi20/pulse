@@ -171,10 +171,15 @@ the commands it runs, and they are the ones in the table above and in
 | `make test` | All tests, in parallel. One file: `make test ARGS=tests/monitors/test_retention.py` |
 | `make logs SERVICE={api\|worker\|beat\|postgres\|redis\|catcher\|flaky}` | Follows one service's log. Without `SERVICE`, `api` |
 | `make psql` | Opens `psql` on Pulse's database. Another one: `make psql DB=pulse_loadtest` |
+| `make explain MONITOR=<id> DAYS={7\|30\|90}` | `EXPLAIN (ANALYZE, BUFFERS)` of the uptime query: how Postgres runs it, how long it took and how many pages it read. On the seeded data: `make explain DB=pulse_loadtest MONITOR=123 DAYS=30` |
 | `make status` | Prints `up` or `down` and the name of each monitor on the status page |
 | `make rollup` | Queues the hourly roll-up of checks now (_Data retention_) |
-| `make demo-break`, `make demo-fix` | Stops, and starts, `shop-redis`: the deep monitor on `shop` fails while the shallow one stays up (_shop_) |
-| `make loadtest-up`, `make loadtest-seed`, `make loadtest`, `make loadtest-down` | The load test: [LOADTEST.md](LOADTEST.md), _Running it_ |
+| `make demo-ready` | Checks what an outage demo needs: Pulse, `worker` and `beat`, the three `shop` containers, the catcher, every monitor up. Each line is `ok`, or `FAIL` with the command that fixes it |
+| `make demo-break` | Stops `shop-redis`. The deep monitor on `shop` fails while the shallow one stays up (_shop_). **Undo: `make demo-fix`** |
+| `make demo-fix` | Starts `shop-redis` again |
+| `make demo-watch` | Follows the worker's log, showing only failed checks and alerts sent. Ctrl+C stops it |
+| `make demo-alerts` | Lists the alerts the catcher received, newest first: time, event, monitor, downtime, start of the signature |
+| `make loadtest-up`, `make loadtest-seed`, `make loadtest`, `make loadtest-down` | The load test, in that order: [LOADTEST.md](LOADTEST.md), _Running it_. **`make loadtest-up` stops the checks until `make loadtest-down`** |
 
 ## API
 
