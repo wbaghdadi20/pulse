@@ -13,7 +13,7 @@ from tests.conftest import client_for
 
 pytestmark = pytest.mark.django_db
 
-PUBLIC = {"health", "ready", "status-page", "signup", "login"}
+PUBLIC = {"health", "ready", "status-page", "status-live", "signup", "login"}
 METHODS = ["get", "post", "put", "patch", "delete"]
 
 

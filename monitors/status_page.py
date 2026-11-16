@@ -3,6 +3,8 @@
 Why it is cached this way: docs/adr/0009-status-page-cache.md
 """
 
+import hashlib
+import json
 from collections import defaultdict
 from datetime import datetime
 from typing import Any
@@ -22,13 +24,27 @@ RECENT_INCIDENTS = 3
 CACHE_KEY = "status:page"
 
 
-def get_status_page() -> dict[str, Any]:
-    """Cache-aside: the cached page if there is one, else build it and keep it a while."""
-    page: dict[str, Any] | None = cache.get(CACHE_KEY)
-    if page is None:
+def get_status_page() -> tuple[dict[str, Any], str]:
+    """The page and its ETag. Cache-aside: the cached pair if there is one, else
+    build it and keep it a while."""
+    cached: tuple[dict[str, Any], str] | None = cache.get(CACHE_KEY)
+    if cached is None:
         page = build_status_page()
-        cache.set(CACHE_KEY, page, settings.PULSE_STATUS_CACHE_SECONDS)
-    return page
+        cached = (page, etag_of(page))
+        cache.set(CACHE_KEY, cached, settings.PULSE_STATUS_CACHE_SECONDS)
+    return cached
+
+
+def etag_of(page: dict[str, Any]) -> str:
+    """The same for two pages that say the same about the monitors.
+
+    generated_at is left out: it changes every time the page is rebuilt, and a
+    rebuilt page that says nothing new should still be "not modified". Two such
+    pages are equivalent, not byte for byte identical, which is what a weak
+    validator (W/) means.
+    """
+    monitors = json.dumps(page["monitors"], sort_keys=True, default=str)
+    return f'W/"{hashlib.sha256(monitors.encode()).hexdigest()[:32]}"'
 
 
 def invalidate() -> None:
