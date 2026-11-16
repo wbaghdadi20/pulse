@@ -14,7 +14,8 @@ def aggregates() -> dict[str, Aggregate]:
         # avg(ok::int): true counts as 1, false as 0, so the average is the up ratio.
         "up_ratio": Avg(Cast("ok", IntegerField()), output_field=FloatField()),
         "p95_latency_ms": PercentileCont("latency_ms", 0.95),
-        "checks": Count("id"),
+        # count(*), not count(id): id is not in the index the query is answered from.
+        "checks": Count("*"),
     }
 
 

@@ -1,8 +1,13 @@
-"""What the uptime endpoint costs the database."""
+"""What the uptime endpoint costs the database: how many queries, and read from where."""
+
+from datetime import timedelta
 
 import pytest
+from django.db import connection
 from django.urls import reverse
+from django.utils import timezone
 
+from monitors import uptime
 from monitors.models import Check
 
 pytestmark = pytest.mark.django_db
@@ -21,3 +26,23 @@ def test_uptime_takes_three_queries_however_many_checks(
         body = api.get(reverse("monitor-uptime", args=[monitor.pk])).json()
 
     assert body["checks"] == checks
+
+
+def test_the_uptime_aggregates_are_answered_from_the_index_alone(monitor):
+    """An aggregate over a column the index does not carry would send Postgres back
+    to the table for every check, and this plan would say Index Scan instead."""
+    with connection.cursor() as cursor:
+        # A table this small is read whole unless the planner is told not to.
+        cursor.execute("SET LOCAL enable_seqscan = off")
+        cursor.execute("SET LOCAL enable_bitmapscan = off")
+
+    plan = (
+        Check.objects.filter(
+            monitor=monitor, checked_at__gt=timezone.now() - timedelta(days=30)
+        )
+        .values("monitor_id")
+        .annotate(**uptime.aggregates())
+        .explain()
+    )
+
+    assert "Index Only Scan using checks_monitor_checked_cover" in plan
