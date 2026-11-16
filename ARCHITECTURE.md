@@ -103,42 +103,51 @@ and if that check opens an incident, the alert is queued from the request.
 any replica can answer any request. Only `api` checks tokens and counts requests.
 `worker` acts for the system and for every owner.
 
-### Deployment: Compose projects and networks
+### Deployment: every service, and who talks to whom
 
-`flaky` and `catcher` are services of the `pulse` Compose project for convenience,
-but Pulse treats them as outsiders. `shop` is a separate project, like a service
-another team operates.
+Ten services in two Compose projects. `flaky` and `catcher` are services of the
+`pulse` project for convenience, but Pulse treats them as outsiders. `shop` is a
+separate project, like a service another team operates.
 
 ```mermaid
 flowchart LR
-    host["<b>Laptop</b><br/>localhost"]
-
-    subgraph pulseproj ["Compose project: pulse, network pulse_default"]
-        api["api<br/>:8000"]
-        worker["worker"]
-        beat["beat"]
-        redis[("redis<br/>:6379")]
-        postgres[("postgres<br/>:5432")]
-        flaky["flaky<br/>:8000"]
-        catcher["catcher<br/>:8000"]
+    subgraph pulseproj ["Compose project: pulse (network pulse_default)"]
+        beat["<b>beat</b>"]
+        api["<b>api</b><br/>host port 8100"]
+        worker["<b>worker</b>"]
+        redis[("<b>redis</b>")]
+        postgres[("<b>postgres</b><br/>host port 127.0.0.1:5433")]
+        flaky["<b>flaky</b><br/>host port 8200"]
+        catcher["<b>catcher</b><br/>host port 8400"]
     end
 
-    subgraph shopproj ["Compose project: shop, network shop_default"]
-        shop["shop<br/>:8000"]
-        shopdb[("shop-db")]
-        shopredis[("shop-redis")]
+    subgraph shopproj ["Compose project: shop (network shop_default)"]
+        shop["<b>shop</b><br/>host port 8300"]
+        shopdb[("<b>shop-db</b>")]
+        shopredis[("<b>shop-redis</b>")]
     end
 
-    host -- "8100" --> api
-    host -- "8200" --> flaky
-    host -- "8400" --> catcher
-    host -- "127.0.0.1:5433" --> postgres
-    host -- "8300" --> shop
-    api -. "pulse-targets" .-> shop
-    worker -. "pulse-targets" .-> shop
-    shop --> shopdb
-    shop --> shopredis
+    beat -- "queues the 10 s tick" --> redis
+    api -- "reads and writes" --> postgres
+    api -- "status page cache, rate limit counters,<br/>queues alerts" --> redis
+    worker -- "reads and writes" --> postgres
+    worker -- "takes and queues tasks,<br/>check locks, drops the cached page" --> redis
+    api -- "check now" --> flaky
+    worker -- "scheduled checks" --> flaky
+    worker -- "signed alerts" --> catcher
+    api -. "check now" .-> shop
+    worker -. "scheduled checks" .-> shop
+    shop -- "catalogue, /ht/" --> shopdb
+    shop -- "cache, /ht/" --> shopredis
+
+    classDef shared stroke:#d97706,stroke-width:4px
+    class api,worker,shop shared
 ```
+
+A thick border marks the three services on the shared `pulse-targets` network,
+and a dotted arrow is traffic that crosses it. Every other arrow stays inside
+one project's own network. Nothing points at `beat`, and nothing but `shop`
+points at `shop-db` or `shop-redis`.
 
 | Network         | Members                                                   | Purpose                                 |
 | --------------- | --------------------------------------------------------- | --------------------------------------- |
@@ -146,7 +155,11 @@ flowchart LR
 | `pulse-targets` | api, worker, shop                                         | the only path from Pulse to shop        |
 | `shop_default`  | shop, shop-db, shop-redis                                 | shop's private dependencies             |
 
-`shop-db` and `shop-redis` are unreachable from Pulse by design.
+`pulse-targets` is created by hand (`docker network create pulse-targets`) and
+declared `external` in both Compose files. `shop-db` and `shop-redis` are
+unreachable from Pulse by design: it learns about them only through what `shop`
+answers. When Pulse monitors its own `/ready`, `worker` calls `api` like any
+other target.
 
 ### Build and release
 
@@ -368,7 +381,7 @@ erDiagram
 | `users`     | `ck_user_email_lowercase` check `email = lower(email)`                       | one account per address whatever its case      |
 | `monitors`  | `uq_monitor_owner_name` unique `(owner_id, name)`                            | duplicate name is a 409 for that owner only; also the index behind "my monitors" |
 | `monitors`  | index on `(next_check_at)`                                                   | "which monitors are due" every 10 s            |
-| `checks`    | `checks_monitor_checked_idx` on `(monitor_id, checked_at)`                   | the uptime query, "last N checks", the status page |
+| `checks`    | `checks_monitor_checked_cover` on `(monitor_id, checked_at)`, carrying `ok` and `latency_ms` | the uptime query (answered from the index alone), "last N checks", the status page |
 | `incidents` | `uq_one_open_incident_per_kind` unique `(monitor_id, kind)` where `resolved_at IS NULL` | at most one open incident per monitor and kind |
 | `alerts`    | `uq_alert_incident_kind` unique `(incident_id, kind)`                        | one alert per incident event, however often it is queued |
 
@@ -614,6 +627,123 @@ stateDiagram-v2
 
 ## Decisions
 
+The five that shape Pulse most, in short. Each links to its full record, and the
+table after them lists every record.
+
+### Scheduling: Celery workers and one beat tick
+
+- **Context.** Every monitor has to be checked every `interval_s` seconds with
+  nobody asking, and monitors are created, changed and deleted at runtime
+  through the API.
+- **Decision.** `beat` queues one task every 10 s. That task asks Postgres which
+  monitors are due and queues one `run_check` for each; `worker` processes run
+  them. The schedule is the `monitors` table.
+- **Alternatives considered.** A loop or APScheduler inside the web process:
+  every gunicorn worker would run its own scheduler, and a slow check would hold
+  a request worker. One beat entry per monitor: beat's schedule is static, so
+  changing it at runtime needs `django-celery-beat` and its tables. RabbitMQ as
+  the broker: durable queues for work where a lost check is simply replaced by
+  the next one.
+- **Consequences.** Better: checks never run in a request worker, workers scale
+  with `--scale worker=N`, and a monitor created through the API is checked
+  within one tick with no redeploy. Worse: three more processes and Redis to
+  run; an interval is rounded to the 10 s tick; `beat` is a single instance, and
+  if it stops, checks stop with nothing inside Pulse to notice.
+- Full records: [0005](docs/adr/0005-scheduling.md),
+  [0021](docs/adr/0021-early-ack-and-grace-period.md).
+
+### One open incident per monitor: a partial unique index
+
+- **Context.** A monitor must never have two open incidents of the same kind,
+  and two things can try to open one at the same moment: a scheduled check and
+  a "check now", or two workers.
+- **Decision.** `uq_one_open_incident_per_kind` is a unique index on
+  `(monitor, kind)` over the rows `WHERE resolved_at IS NULL`. The code inserts
+  without looking first, and a violation becomes `IncidentAlreadyOpen`.
+- **Alternatives considered.** Look, then insert, in Python: two callers can
+  both see "none open" and both insert. Lock the monitor row first
+  (`select_for_update`): correct, but every writer has to remember the lock,
+  and it makes writers wait that would not have conflicted. A plain unique
+  constraint on `(monitor, kind)`: it would also forbid the second incident a
+  monitor ever has.
+- **Consequences.** Better: the rule holds however many writers there are and
+  whichever code path they take, with no lock, and resolved incidents are not
+  limited. Worse: it is Postgres only (a partial index, and the constraint's
+  name read from the driver's error); every insert pays a savepoint; whoever
+  opens an incident has to handle losing the race.
+- Full record: [0003](docs/adr/0003-database-enforced-rules.md).
+
+### Flap protection: three failures open, two passes resolve
+
+- **Context.** Networks blip. An alert on every failed check teaches people to
+  ignore alerts; an alert that comes too late is a dashboard.
+- **Decision.** An incident opens after N failed checks in a row and resolves
+  after M passing ones, N = 3 and M = 2, global settings bounded 1 to 10. The
+  rule is a pure function over the last `max(N, M)` check rows, recomputed on
+  every check.
+- **Alternatives considered.** Alert on the first failure: about 80% of single
+  failures are gone on a retry (Azure's figure). Counters stored on the monitor
+  row: derived data that two checks finishing together can leave wrong for
+  good. "M of the last N" instead of consecutive (CloudWatch), a duration
+  instead of a count (Prometheus `for:`), thresholds per monitor, thresholds
+  learned from history: all need incident data Pulse does not have yet.
+- **Consequences.** Better: one failed check does nothing, the rule is tested
+  exhaustively (properties and mutation testing), and a crash between saving a
+  check and judging it is repaired by the next check. Worse: detection takes
+  N × `interval_s`, 90 s at a 30 s interval; a target that fails every other
+  check never opens an incident, because the failures are never consecutive;
+  one N and M for every monitor, whatever it watches. 3 and 2 are HAProxy's
+  `fall` and `rise` defaults, a convention and not something derived from
+  Pulse's targets (README, _Choosing N and M_).
+- Full record: [0004](docs/adr/0004-incident-detection.md).
+
+### Deep health checks: JSON assertions instead of the status code
+
+- **Context.** shop's `/ht/` answers 500 as soon as any dependency it tests
+  fails, including ones whose failure is not an outage. Its `/health` stays 200
+  with `shop-redis` stopped. Neither status code says what the operator wants
+  to know.
+- **Decision.** A monitor may carry `assertions`, `{"<key>": "<expected value>"}`.
+  The check then asks for JSON, ignores the status code and passes only if every
+  listed key has its expected value. Otherwise it records `assertion_failed`.
+- **Alternatives considered.** Trust the status code: one unimportant component
+  marks the service down. A regular expression over the body: easy to match too
+  much, and costly to run on a body the target controls. JSONPath or JMESPath:
+  a dependency and a language to validate, for bodies that are flat. Ask the
+  service for a narrower endpoint: not ours to change.
+- **Consequences.** Better: the monitor's owner decides which dependencies mean
+  "down", and stopping `shop-redis` fails the deep monitor while the shallow one
+  stays green. Worse: the monitor is tied to the target's key names and breaks
+  if they change (as a failed check, never a silent pass); a check says that an
+  assertion failed, not which; a 500 caused by a component nobody listed passes.
+- Full record: [0023](docs/adr/0023-json-assertions.md).
+
+### One check per interval: a claim in Postgres and a lock in Redis
+
+- **Context.** With several workers a monitor was checked more often than its
+  interval, and by two workers at once: six checks in one second after the
+  workers had been stopped for 38 s.
+- **Decision.** Two mechanisms for two problems. The scheduler *claims* due
+  monitors with `SELECT ... FOR UPDATE SKIP LOCKED` and moves `next_check_at` to
+  the next slot in the same transaction, so an interval is queued once.
+  `run_check` takes a Redis lock (`SET NX EX` with a random token, released by a
+  Lua script that checks the token), so two checks of one monitor never run
+  together. A check is killed at 75 s; the lock lives 90 s.
+- **Alternatives considered.** The lock alone: duplicates are still queued and
+  delivered, only then dropped, and it is correct only while the TTL outlasts
+  every check. The claim alone: it cannot stop a check that outlasts its own
+  interval from overlapping the next. Refusing `timeout_s` above `interval_s`,
+  as Prometheus does: a sensible addition, not built.
+- **Consequences.** Better: measured with three workers for ten minutes, no
+  duplicate and no overlap, and a 10 s monitor is checked every 10.0 s. Worse:
+  checks are at most once per interval, so a crash between claiming and queueing
+  loses that one; a worker that dies mid-check leaves its lock for up to 90 s;
+  the lock is a bet on time, and a process paused for longer than the TTL would
+  still write. Acceptable for a check row, not for a payment.
+- Full record: [0008](docs/adr/0008-one-check-per-interval.md).
+
+### Every record
+
 | ADR | Decision |
 | --- | -------- |
 | [0001](docs/adr/0001-shared-http-clients.md) | One shared HTTP client per process, keep-alive off for checks |
@@ -637,6 +767,8 @@ stateDiagram-v2
 | [0019](docs/adr/0019-image-stages-and-requirements.md) | One Dockerfile with a dev and a runtime target, and requirements split the same way |
 | [0020](docs/adr/0020-ci-and-releases.md) | Every pull request passes CI; a version tag publishes the image |
 | [0021](docs/adr/0021-early-ack-and-grace-period.md) | Tasks are acknowledged when taken; stopping waits for them instead |
+| [0022](docs/adr/0022-uptime-covering-index.md) | The uptime aggregate is answered from a covering index |
+| [0023](docs/adr/0023-json-assertions.md) | A deep health check is judged by the keys asked for, not by its status code |
 
 ## Known limits
 
