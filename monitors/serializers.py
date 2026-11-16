@@ -110,7 +110,10 @@ class IncidentSerializer(serializers.ModelSerializer[Incident]):
         validators: list[Any] = []
 
 
+UPTIME_WINDOWS_DAYS = [7, 30, 90]
+
+
 class UptimeQuerySerializer(serializers.Serializer[Any]):
     """Validates the query string of GET /monitors/<id>/uptime/."""
 
-    days = serializers.ChoiceField(choices=[7, 30, 90], default=7)
+    days = serializers.ChoiceField(choices=UPTIME_WINDOWS_DAYS, default=7)

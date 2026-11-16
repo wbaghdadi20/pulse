@@ -110,6 +110,39 @@ class Check(models.Model):
         return f"{self.monitor_id} @ {self.checked_at:%Y-%m-%d %H:%M:%S} ok={self.ok}"
 
 
+class CheckHour(models.Model):
+    """One monitor's checks of one clock hour, summed up by the roll-up job. Uptime
+    over more days than raw checks are kept for is read from these."""
+
+    # No single-column index: uq_check_hour_monitor_hour below starts with monitor_id.
+    monitor = models.ForeignKey(
+        Monitor, on_delete=models.CASCADE, related_name="check_hours", db_index=False
+    )
+    hour = models.DateTimeField()  # the start of the hour, UTC
+    checks = models.PositiveIntegerField()
+    failures = models.PositiveIntegerField()
+    # {"<bucket>": <how many checks>}: the hour's latencies, counted in the buckets
+    # of monitors/latency.py. Not the hour's p95: that could not be combined with
+    # another hour's, and counts can.
+    latency_buckets = models.JSONField()
+
+    class Meta:
+        db_table = "check_hours"
+        constraints = [
+            # Rolling the same hour up twice replaces the row instead of adding one.
+            models.UniqueConstraint(
+                fields=["monitor", "hour"], name="uq_check_hour_monitor_hour"
+            ),
+        ]
+        indexes = [
+            # "How far has the roll-up got" is the newest hour of any monitor.
+            models.Index(fields=["hour"], name="check_hours_hour_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.monitor_id} @ {self.hour:%Y-%m-%d %H}h: {self.checks} checks"
+
+
 class Incident(models.Model):
     class Kind(models.TextChoices):
         AVAILABILITY = "availability"

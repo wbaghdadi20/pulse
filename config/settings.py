@@ -12,6 +12,8 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 
 from pathlib import Path
 
+from celery.schedules import crontab
+
 from config.env import env_bool, env_int, env_list, env_str
 from core.logs import logging_config
 
@@ -189,6 +191,10 @@ PULSE_JWT_TTL_SECONDS = env_int("PULSE_JWT_TTL_SECONDS", default=3600)
 PULSE_FAIL_THRESHOLD = env_int("PULSE_FAIL_THRESHOLD", default=3)
 PULSE_OK_THRESHOLD = env_int("PULSE_OK_THRESHOLD", default=2)
 
+# Days a check is kept as its own row. Older ones survive only as hourly sums
+# (monitors/retention.py), and uptime over more days than this reads those.
+PULSE_RAW_CHECK_DAYS = env_int("PULSE_RAW_CHECK_DAYS", default=7)
+
 
 # Checks refuse hosts on private and internal addresses (monitors/ssrf.py). Our own
 # targets are on such addresses, so they are named here. Exact hostnames, and only
@@ -224,5 +230,10 @@ CELERY_BEAT_SCHEDULE = {
     "enqueue-due-checks": {
         "task": "monitors.tasks.enqueue_due_checks",
         "schedule": 10.0,
+    },
+    "roll-up-checks": {
+        "task": "monitors.tasks.roll_up_checks",
+        # Ten past every hour: the hour that just ended has settled by then.
+        "schedule": crontab(minute="10"),
     },
 }

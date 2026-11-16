@@ -4,19 +4,18 @@ Why it is cached this way: docs/adr/0009-status-page-cache.md
 """
 
 from collections import defaultdict
-from collections.abc import Mapping
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
-from django.db.models import F, QuerySet, Window
+from django.db.models import F, Q, QuerySet, Window
 from django.db.models.functions import RowNumber
 from django.utils import timezone
 
 from . import uptime
-from .models import Check, Incident, Monitor
+from .models import Incident, Monitor
 
 WINDOW_DAYS = 90
 RECENT_INCIDENTS = 3
@@ -42,17 +41,11 @@ def invalidate() -> None:
 
 
 def build_status_page(now: datetime | None = None) -> dict[str, Any]:
-    """Four queries, however many monitors there are. Only is_public monitors,
+    """Seven queries at most, however many monitors there are. Only is_public monitors,
     whoever owns them: nothing about a private one is read, let alone shown."""
     now = now or timezone.now()
-    since = now - timedelta(days=WINDOW_DAYS)
 
-    stats = {
-        row["monitor_id"]: row
-        for row in Check.objects.filter(monitor__is_public=True, checked_at__gt=since)
-        .values("monitor_id")
-        .annotate(**uptime.aggregates())
-    }
+    stats = uptime.totals(Q(monitor__is_public=True), WINDOW_DAYS, now)
     down = set(
         Incident.objects.filter(
             monitor__is_public=True, resolved_at__isnull=True
@@ -86,8 +79,8 @@ def build_status_page(now: datetime | None = None) -> dict[str, Any]:
     return {"generated_at": now, "window_days": WINDOW_DAYS, "monitors": monitors}
 
 
-def _uptime(stats: Mapping[str, Any] | None) -> dict[str, Any]:
-    summary = uptime.summarise(stats)
+def _uptime(totals: uptime.Totals | None) -> dict[str, Any]:
+    summary = uptime.summarise(totals)
     return {
         "uptime_percent": summary["uptime_percent"],
         "p95_latency_ms": summary["p95_latency_ms"],

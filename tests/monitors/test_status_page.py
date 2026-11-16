@@ -139,7 +139,7 @@ def test_the_page_is_public(api, monitor):
 
 
 @pytest.mark.parametrize("monitors", [1, 8])
-def test_building_the_page_takes_four_queries_whatever_the_number_of_monitors(
+def test_building_the_page_takes_five_queries_whatever_the_number_of_monitors(
     db, django_assert_num_queries, monitors
 ):
     for n in range(monitors):
@@ -147,7 +147,9 @@ def test_building_the_page_takes_four_queries_whatever_the_number_of_monitors(
         add_check(m, ok=True, latency_ms=10, age=timedelta(hours=1))
         Incident.objects.create(monitor=m, cause="x")
 
-    with django_assert_num_queries(4):
+    # how far the roll-up got, the checks, the open incidents, the latest
+    # incidents, the monitors. Seven once hours are summed up: test_retention.py
+    with django_assert_num_queries(5):
         page = status_page.build_status_page()
 
     assert len(page["monitors"]) == monitors
@@ -198,7 +200,7 @@ def test_zero_seconds_turns_the_cache_off(
     settings.PULSE_STATUS_CACHE_SECONDS = 0
     api.get("/status")
 
-    with django_assert_num_queries(4):
+    with django_assert_num_queries(5):
         api.get("/status")
 
 
