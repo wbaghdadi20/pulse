@@ -18,8 +18,13 @@ MONITORS_EACH = 10
 PUBLIC_MONITORS = 20
 PASSWORD = "loadtest-only-not-a-secret"
 
+# 4.6 million rows in the development database would take a while to undo.
+if connection.settings_dict["NAME"] != "pulse_loadtest":
+    raise SystemExit("Not the load-test database: start api with `make loadtest-up`.")
+
 if User.objects.filter(email__startswith="loadtest-").exists():
-    raise SystemExit("Already seeded.")
+    print("Already seeded.")
+    raise SystemExit(0)
 
 # One hash for every account: Argon2 fifty times over would only slow the seed.
 password = make_password(PASSWORD)
