@@ -96,9 +96,13 @@ class Check(models.Model):
         db_table = "checks"
         indexes = [
             # Matches the uptime query: WHERE monitor_id = ? AND checked_at > ?
-            # monitor_id first (equality), checked_at second (range).
+            # monitor_id first (equality), checked_at second (range). ok and
+            # latency_ms ride along in the index: the query aggregates only those
+            # two, so Postgres answers it from the index without visiting the table.
             models.Index(
-                fields=["monitor", "checked_at"], name="checks_monitor_checked_idx"
+                fields=["monitor", "checked_at"],
+                include=["ok", "latency_ms"],
+                name="checks_monitor_checked_cover",
             ),
         ]
 
