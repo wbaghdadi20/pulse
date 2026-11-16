@@ -18,6 +18,8 @@ WORKERS  ?= 4
 USERS    ?= 50
 RATE     ?= 5
 DURATION ?= 2m
+MONITOR  ?= 1
+DAYS     ?= 30
 
 # migrate and the seed run in whichever api container is up. If that is the
 # development one they would land in the development database, so the load-test
@@ -28,7 +30,8 @@ define require_loadtest_api
 endef
 
 .DEFAULT_GOAL := help
-.PHONY: help up down migrate test logs psql status rollup demo-break demo-fix \
+.PHONY: help up down migrate test logs psql explain status rollup \
+	demo-ready demo-watch demo-break demo-fix demo-alerts \
 	loadtest-up loadtest-seed loadtest loadtest-down
 
 help: ## List the targets
@@ -57,19 +60,42 @@ logs: ## Follow one service's log: make logs SERVICE=worker
 psql: ## Open psql on Pulse's database, or another: make psql DB=pulse_loadtest
 	$(DEV) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$(if $(DB),$(DB),$$POSTGRES_DB)"'
 
+explain: ## How Postgres runs the uptime query: make explain DB=pulse_loadtest MONITOR=123 DAYS=30
+	$(DEV) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$(if $(DB),$(DB),$$POSTGRES_DB)" -c "EXPLAIN (ANALYZE, BUFFERS) SELECT count(*), count(ok) FILTER (WHERE NOT ok), percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) FROM checks WHERE monitor_id = $(MONITOR) AND checked_at > now() - make_interval(days => $(DAYS))"'
+
 status: ## Print the state of each monitor on the status page
 	@curl -s localhost:8100/status | python3 -c 'import json, sys; [print(m["state"], m["name"], sep="\t") for m in json.load(sys.stdin)["monitors"]]'
 
 rollup: ## Run the hourly roll-up of checks now
 	$(DEV) exec worker celery -A config call monitors.tasks.roll_up_checks
 
-demo-break: ## Stop shop's Redis: the deep monitor fails, the shallow one does not
+demo-ready: ## Before the demo: is everything it needs running? Each line says ok, or what to run
+	@curl -fs -o /dev/null localhost:8100/ready \
+		&& echo "ok    Pulse answers" || echo "FAIL  Pulse does not answer.        Run: make up"
+	@test "$$($(DEV) exec -T api printenv POSTGRES_DB 2>/dev/null)" != pulse_loadtest \
+		&& echo "ok    api is the development one" || echo "FAIL  api is in load-test mode.       Run: make loadtest-down"
+	@test "$$($(DEV) ps --status running --services 2>/dev/null | grep -cE '^(worker|beat)$$')" = 2 \
+		&& echo "ok    worker and beat are running" || echo "FAIL  worker or beat is stopped.      Run: make up"
+	@test "$$($(SHOP) ps --status running --services 2>/dev/null | grep -c .)" = 3 \
+		&& echo "ok    shop, shop-db and shop-redis are running" || echo "FAIL  part of shop is stopped.        Run: make demo-fix, or make up"
+	@curl -fs -o /dev/null localhost:8400/ \
+		&& echo "ok    catcher answers" || echo "FAIL  catcher does not answer.      Run: make up"
+	@curl -s localhost:8100/status | python3 -c 'import json, sys; m = json.load(sys.stdin)["monitors"]; d = [x["name"] for x in m if x["state"] == "down"]; print("ok    %d monitors, all up" % len(m) if m and not d else "FAIL  down: %s. Run: make demo-fix, wait 30 s, make demo-ready" % (", ".join(d) or "no public monitor at all"))' 2>/dev/null \
+		|| echo "FAIL  no status page.               Run: make up"
+
+demo-watch: ## Follow the worker: failed checks and alerts sent, as they happen (Ctrl+C stops)
+	$(DEV) logs -f --since 1m worker | grep --line-buffered -oE '"message": "(monitor [0-9]+ ok=False[^"]*|alert [0-9]+ sent[^"]*)"'
+
+demo-break: ## Stop shop's Redis: the deep monitor fails, the shallow one does not. Undo: make demo-fix
 	$(SHOP) stop shop-redis
 
 demo-fix: ## Start shop's Redis again
 	$(SHOP) start shop-redis
 
-loadtest-up: ## Run api as it is load-tested: make loadtest-up WORKERS=8
+demo-alerts: ## The alerts the catcher received, newest first, with their signatures
+	@curl -s localhost:8400/ | python3 -c 'import json, sys; [print(a["received_at"][11:19], a["body"]["event"], a["body"]["monitor"], "downtime_seconds=%s" % a["body"]["downtime_seconds"], "signature=%s..." % a["headers"]["x-pulse-signature"][:16], sep="  ") for a in json.load(sys.stdin)]'
+
+loadtest-up: ## Run api as it is load-tested: make loadtest-up WORKERS=8. Undo: make loadtest-down
 	$(DEV) stop worker beat
 	WEB_CONCURRENCY=$(WORKERS) $(LOADTEST) up -d --build --wait api
 
