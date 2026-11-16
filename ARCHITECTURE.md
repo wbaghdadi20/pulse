@@ -57,7 +57,7 @@ flowchart TB
 
     subgraph pulse ["Pulse"]
         api["<b>api</b><br/>[Container: Django + DRF on gunicorn]<br/>REST API: signup, login, monitors,<br/>check now, uptime, incidents, status page"]
-        beat["<b>beat</b><br/>[Container: Celery beat]<br/>The clock. Queues one<br/>enqueue_due_checks every 10 s"]
+        beat["<b>beat</b><br/>[Container: Celery beat]<br/>The clock. Queues enqueue_due_checks<br/>every 10 s and roll_up_checks every hour"]
         worker["<b>worker</b><br/>[Container: Celery worker]<br/>Runs checks, evaluates incidents,<br/>delivers alerts"]
         redis[("<b>redis</b><br/>[Container: Redis 7]<br/>db 0: Celery broker, the task queue<br/>db 1: status page cache, check locks,<br/>rate limit counters")]
         postgres[("<b>postgres</b><br/>[Container: PostgreSQL 16]<br/>users, monitors, checks,<br/>incidents, alerts")]
@@ -72,7 +72,7 @@ flowchart TB
     api -- "reads and writes<br/>[SQL, psycopg]" --> postgres
     api -- "queues send_alert<br/>[Redis protocol]" --> redis
     api -- "check now<br/>[HTTP]" --> targets
-    beat -- "queues enqueue_due_checks<br/>[Redis protocol]" --> redis
+    beat -- "queues enqueue_due_checks<br/>and roll_up_checks<br/>[Redis protocol]" --> redis
     worker -- "takes tasks, queues run_check and send_alert,<br/>locks a monitor while checking it,<br/>drops the cached page [Redis protocol]" --> redis
     worker -- "reads and writes<br/>[SQL, psycopg]" --> postgres
     worker -- "scheduled checks<br/>[HTTP]" --> targets
@@ -127,7 +127,7 @@ flowchart LR
         shopredis[("<b>shop-redis</b>")]
     end
 
-    beat -- "queues the 10 s tick" --> redis
+    beat -- "queues the 10 s tick<br/>and the hourly roll-up" --> redis
     api -- "reads and writes" --> postgres
     api -- "status page cache, rate limit counters,<br/>queues alerts" --> redis
     worker -- "reads and writes" --> postgres
@@ -237,7 +237,7 @@ flowchart TB
         readiness["<b>core/readiness.py</b><br/>SELECT 1 on Postgres, PING on Redis,<br/>each with a timeout"]
         services["<b>monitors/services.py</b><br/>Business rules: CRUD scoped to an owner,<br/>claim_due_monitors, check_monitor,<br/>evaluate_incidents, uptime, open and resolve"]
         ssrf["<b>monitors/ssrf.py</b><br/>safe_address: resolve the host, judge<br/>every address, return the one to call"]
-        statuspage["<b>monitors/status_page.py</b><br/>Build the public page in four queries<br/>from public monitors, cache it, invalidate it"]
+        statuspage["<b>monitors/status_page.py</b><br/>Build the public page in at most seven<br/>queries from public monitors, cache it, invalidate it"]
         uptime["<b>monitors/uptime.py</b><br/>The uptime and p95 aggregates"]
         incidents["<b>monitors/incidents.py</b><br/>[Pure function]<br/>decide: open, resolve or nothing"]
         alerting["<b>monitors/alerting.py</b><br/>Record an alert, sign it, deliver it,<br/>retry policy"]
@@ -322,6 +322,7 @@ URLs, the Celery app, typed environment readers.
 erDiagram
     USER ||--o{ MONITOR : "owns"
     MONITOR ||--o{ CHECK : "is checked by"
+    MONITOR ||--o{ CHECK_HOUR : "is summed up in"
     MONITOR ||--o{ INCIDENT : "has"
     INCIDENT ||--o{ ALERT : "produces"
 
@@ -356,6 +357,14 @@ erDiagram
         int latency_ms
         varchar error_type "nullable, blocked since D8"
     }
+    CHECK_HOUR {
+        bigint id PK
+        bigint monitor_id FK
+        timestamptz hour "start of the hour, UTC"
+        int checks
+        int failures
+        jsonb latency_buckets "bucket to count"
+    }
     INCIDENT {
         bigint id PK
         bigint monitor_id FK
@@ -382,12 +391,15 @@ erDiagram
 | `monitors`  | `uq_monitor_owner_name` unique `(owner_id, name)`                            | duplicate name is a 409 for that owner only; also the index behind "my monitors" |
 | `monitors`  | index on `(next_check_at)`                                                   | "which monitors are due" every 10 s            |
 | `checks`    | `checks_monitor_checked_cover` on `(monitor_id, checked_at)`, carrying `ok` and `latency_ms` | the uptime query (answered from the index alone), "last N checks", the status page |
+| `check_hours` | `uq_check_hour_monitor_hour` unique `(monitor_id, hour)`                   | summing an hour up twice replaces its row; also the index behind a monitor's hours |
+| `check_hours` | index on `(hour)`                                                          | "how far has the roll-up got": the newest hour |
 | `incidents` | `uq_one_open_incident_per_kind` unique `(monitor_id, kind)` where `resolved_at IS NULL` | at most one open incident per monitor and kind |
 | `alerts`    | `uq_alert_incident_kind` unique `(incident_id, kind)`                        | one alert per incident event, however often it is queued |
 
 Deleting a user cascades to their monitors. Deleting a monitor cascades to its
-checks, incidents and alerts. `checks` is append-only and is the only table that
-grows without bound.
+checks, hourly sums, incidents and alerts. A check is kept for a week and its
+hour's sums for 91 days, so `checks` and `check_hours` depend on the number of
+monitors and not on how long Pulse has run ([ADR 0024](docs/adr/0024-check-retention.md)).
 
 ## Flows
 
@@ -769,6 +781,7 @@ table after them lists every record.
 | [0021](docs/adr/0021-early-ack-and-grace-period.md) | Tasks are acknowledged when taken; stopping waits for them instead |
 | [0022](docs/adr/0022-uptime-covering-index.md) | The uptime aggregate is answered from a covering index |
 | [0023](docs/adr/0023-json-assertions.md) | A deep health check is judged by the keys asked for, not by its status code |
+| [0024](docs/adr/0024-check-retention.md) | Raw checks are kept a week; older ones survive as hourly sums with latency buckets |
 
 ## Known limits
 
@@ -779,7 +792,9 @@ table after them lists every record.
 | A worker that crashes mid-check leaves its lock for up to 90 s | that monitor is not checked until the lock expires | accepted: the price of a TTL that never expires under a live check |
 | A crash between claiming a monitor and queueing its check | that interval's check is lost, the next one runs | accepted: at most once per interval |
 | Every request that misses the status cache rebuilds the page | a burst right after an invalidation runs the heavy query many times at once | not scheduled: a lock around the rebuild, or rebuild in a worker |
-| `checks` is never pruned | the 90-day queries slow as the table grows | not scheduled: retention or daily roll-ups |
+| p95 over 30 and 90 days is read from latency buckets | within 5% of the real one, and the window starts at the top of an hour | accepted: ADR 0024 |
+| The hourly roll-up and delete scan the raw `checks` table | a week of rows read once an hour | not scheduled: a BRIN index on `checked_at`, or daily partitions |
+| Deleted checks do not shrink the table file | the space is reused, not returned to the system | not scheduled: daily partitions, ADR 0024 |
 | An alert whose `send_alert` message is lost stays `pending` | broker down at commit, or a worker killed mid-task | not scheduled: a periodic sweep of old pending alerts |
 | One Redis for queue, locks, cache and rate limit counters | losing it stops checks, alerts and the status page, and the API answers 500 | separate instances in production |
 | A token cannot be revoked before it expires | a stolen token works for up to an hour | accepted: ADR 0013 |

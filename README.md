@@ -680,8 +680,8 @@ not on it at all.
 curl -s localhost:8100/status | python -m json.tool
 ```
 
-The page takes four queries whatever the number of monitors, and one of them
-aggregates 90 days of checks. So it is cached in Redis under `status:page` for
+The page takes at most seven queries whatever the number of monitors, and they
+add up 90 days of checks. So it is cached in Redis under `status:page` for
 `PULSE_STATUS_CACHE_SECONDS` (default 15): a request returns the cached page if
 there is one, otherwise builds it, stores it and returns it. When an incident
 opens or resolves the key is deleted, so the next visitor sees the change at
@@ -712,6 +712,35 @@ Without the cache every request runs the 0.4 s aggregate and two workers serve
 50 clients, so most of the nine seconds is waiting in line. With it, almost every
 request is one Redis read. The cached p99 is the stampede: the first 50 requests
 all missed and all built the page.
+
+## Data retention
+
+A check is kept as its own row for a week. Before it goes, its hour is summed up
+into one row of `check_hours` per monitor: how many checks, how many failed, and
+their latencies counted in buckets. The hourly rows are kept for 91 days, one
+more than the longest window `/status` and the uptime endpoint read, so neither
+table grows with time.
+
+Beat queues the job at ten past every hour (`monitors.tasks.roll_up_checks`):
+
+```bash
+docker compose logs worker | grep "rolled up"
+# "rolled up 72 monitor hours, deleted 0 checks and 0 old hours"
+docker compose exec worker celery -A config call monitors.tasks.roll_up_checks   # now, without waiting
+```
+
+What a reader of the API sees:
+
+- Uptime and the check count are exact for every window.
+- `p95_latency_ms` over 7 days is exact. Over 30 and 90 days it is read from the
+  buckets and is within 5% of the real one. The hours store buckets and not
+  their own p95 because percentiles of separate hours cannot be combined: the
+  average of hourly p95 was tried first and said 460 ms where the rows said 193.
+- A 30- or 90-day window starts at the top of an hour.
+
+`PULSE_RAW_CHECK_DAYS` (default 7) is how long raw checks are kept; a window up
+to that long is always computed from them. Options, measurements and what it
+costs: [ADR 0024](docs/adr/0024-check-retention.md).
 
 ## Logs
 
@@ -1045,6 +1074,7 @@ All settings come from environment variables in `.env` (never committed).
 | `POSTGRES_PORT`        | Database port inside the Docker network. Defaults to `5432`.          |
 | `PULSE_FAIL_THRESHOLD` | Failed checks in a row before an incident opens. 1–10, default `3`.   |
 | `PULSE_OK_THRESHOLD`   | Successful checks in a row before it resolves. 1–10, default `2`.     |
+| `PULSE_RAW_CHECK_DAYS` | Days a check is kept as its own row before only its hour's sums remain. 1–365, default `7`. |
 | `CELERY_BROKER_URL`    | The queue. `redis://redis:6379/0` inside Docker. Required.            |
 | `PULSE_WEBHOOK_URL`    | Where alerts are POSTed. Defaults to `http://catcher:8000/webhook`.   |
 | `PULSE_WEBHOOK_SECRET` | Shared with the catcher; alerts are HMAC-signed with it. Required.    |
