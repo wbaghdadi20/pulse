@@ -13,7 +13,7 @@ from django.conf import settings
 
 from core.system_checks import MAX_ALERT_ATTEMPTS
 
-from . import alerting, locks, services
+from . import alerting, locks, retention, services
 from .models import MAX_TIMEOUT_S, Alert, Monitor
 
 log = get_task_logger(__name__)
@@ -63,6 +63,21 @@ def _check(monitor_id: int) -> None:
     result = services.check_monitor(monitor)
     log.info(
         "monitor %d ok=%s error=%s", monitor_id, result["ok"], result["error_type"]
+    )
+
+
+@shared_task
+def roll_up_checks() -> None:
+    """Sum up the hours that are over, then delete the checks kept long enough.
+    Beat calls this hourly. Safe to run twice, or twice at once: see retention.py."""
+    rolled = retention.roll_up()
+    checks = retention.prune()
+    hours = retention.forget()
+    log.info(
+        "rolled up %d monitor hours, deleted %d checks and %d old hours",
+        rolled,
+        checks,
+        hours,
     )
 
 

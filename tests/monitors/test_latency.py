@@ -2,12 +2,14 @@
 
 import math
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from monitors import latency
+from monitors import latency, retention
+from monitors.models import Check, CheckHour
 
 LATENCIES = st.integers(min_value=0, max_value=75_000)  # ms: past the 75 s kill
 
@@ -15,6 +17,35 @@ LATENCIES = st.integers(min_value=0, max_value=75_000)  # ms: past the 75 s kill
 def bucket_of(latency_ms: int) -> int:
     """latency.BUCKET_SQL, in Python."""
     return math.floor(math.log(max(latency_ms, 1)) / math.log(latency.GROWTH))
+
+
+@pytest.mark.django_db
+def test_postgres_counts_each_latency_in_the_bucket_that_holds_it(monitor):
+    """The SQL is the only place a latency becomes a bucket. Here every latency is
+    its own hour, so its bucket can be read back and checked against its bounds."""
+    values = [0, 1, 2, 9, 10, 11, 99, 100, 101, 110, 111, 1000, 30_000, 75_000]
+    first_hour = datetime(2026, 11, 1, tzinfo=UTC)
+    for n, value in enumerate(values):
+        Check.objects.create(
+            monitor=monitor,
+            checked_at=first_hour + timedelta(hours=n),
+            ok=True,
+            status_code=200,
+            latency_ms=value,
+        )
+
+    retention.roll_up(first_hour + timedelta(days=2))
+
+    stored = CheckHour.objects.order_by("hour").values_list(
+        "latency_buckets", flat=True
+    )
+    for value, buckets in zip(values, stored, strict=True):
+        ((bucket, count),) = buckets.items()
+        low = latency.GROWTH ** int(bucket)
+        assert count == 1
+        assert low <= max(value, 1) * (1 + 1e-9), value
+        assert max(value, 1) < low * latency.GROWTH * (1 + 1e-9), value
+        assert int(bucket) == bucket_of(value)
 
 
 @given(st.lists(LATENCIES, min_size=1, max_size=200))

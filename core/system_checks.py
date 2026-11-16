@@ -34,6 +34,8 @@ MAX_AUTH_RATE_LIMIT_PER_MINUTE = 60
 MAX_NUM_PROXIES = 5
 # /ready asks two dependencies in turn, and a monitor waits 30 s at most for the answer.
 MAX_DEPENDENCY_TIMEOUT_S = 10
+# Hourly sums are a twelfth of the rows or less; a year of raw checks is no retention.
+MAX_RAW_CHECK_DAYS = 365
 
 
 @register()
@@ -112,6 +114,13 @@ def check_bounded_settings(
         MAX_DEPENDENCY_TIMEOUT_S,
         id="pulse.E010",
         hint="Set it in .env. Seconds to wait for Postgres or Redis before calling it unreachable.",
+    )
+    errors += _in_range(
+        "PULSE_RAW_CHECK_DAYS",
+        1,
+        MAX_RAW_CHECK_DAYS,
+        id="pulse.E011",
+        hint="Set it in .env. Days a check is kept before only its hour's sums remain.",
     )
     return errors
 

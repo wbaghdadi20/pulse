@@ -110,3 +110,15 @@ def test_out_of_range_proxy_count_is_reported(settings, value):
 def test_out_of_range_dependency_timeout_is_reported(settings, value):
     settings.PULSE_DEPENDENCY_TIMEOUT_S = value
     assert [e.id for e in pulse_errors()] == ["pulse.E010"]
+
+
+@pytest.mark.parametrize("value", [0, 366])
+def test_out_of_range_raw_check_days_is_reported(settings, value):
+    settings.PULSE_RAW_CHECK_DAYS = value
+    assert [e.id for e in pulse_errors()] == ["pulse.E011"]
+
+
+@pytest.mark.parametrize("value", [1, 365])
+def test_raw_check_days_bounds_are_inclusive(settings, value):
+    settings.PULSE_RAW_CHECK_DAYS = value
+    assert pulse_errors() == []

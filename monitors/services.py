@@ -18,6 +18,7 @@ from django.db.models import (
     ExpressionWrapper,
     F,
     OuterRef,
+    Q,
     QuerySet,
     Subquery,
     Value,
@@ -191,14 +192,11 @@ def get_uptime(
 ) -> dict[str, Any]:
     """Uptime and p95 latency over the last `days` days, computed by Postgres.
 
-    One aggregate query: no check rows are loaded into Python.
+    No check rows are loaded into Python.
     `now` is injectable so tests can pin the clock; production leaves it None.
     """
-    since = (now or timezone.now()) - timedelta(days=days)
-    stats = Check.objects.filter(monitor=monitor, checked_at__gt=since).aggregate(
-        **uptime.aggregates()
-    )
-    return {"days": days, **uptime.summarise(stats)}
+    totals = uptime.totals(Q(monitor=monitor), days, now).get(monitor.pk)
+    return {"days": days, **uptime.summarise(totals)}
 
 
 def open_incident_for(
