@@ -43,7 +43,7 @@ was attacked and fixed: [SECURITY.md](SECURITY.md).
 4. Create the network shared with the `shop` target, then build and start the stack:
 
    ```bash
-   docker network create pulse-net
+   docker network create pulse-targets
    docker compose up --build -d --wait
    ```
 
@@ -913,7 +913,7 @@ stopping the container is the realistic test. `docker compose start flaky` bring
 `shop/` is a small Django app with its own Postgres (`shop-db`) and Redis
 (`shop-redis`), run as a **separate Compose project** so it behaves like a service
 someone else operates. Pulse reaches it as `http://shop:8000/` over the shared
-`pulse-net` network; from your laptop it is http://localhost:8300.
+`pulse-targets` network; from your laptop it is http://localhost:8300.
 
 | URL        | Depth   | Checks                                      | Down when                  |
 | ---------- | ------- | ------------------------------------------- | -------------------------- |
@@ -961,8 +961,8 @@ laptop reaches at `localhost:8300`.
 Docker Compose gives each project its own network, and containers on the same
 network reach each other by **service name** through Docker's built-in DNS. That is
 why the `api` container reaches its database at `postgres:5432`. Pulse and `shop`
-are separate projects, so they share one extra network, `pulse-net`, created once
-by hand (`docker network create pulse-net`) and declared `external` in both files:
+are separate projects, so they share one extra network, `pulse-targets`, created once
+by hand (`docker network create pulse-targets`) and declared `external` in both files:
 
 ```yaml
 # compose.yaml (Pulse)                 # shop/compose.yaml
@@ -971,11 +971,11 @@ services:                              services:
     networks: [default, monitoring]        networks: [default, monitoring]
 networks:                              networks:
   monitoring:                            monitoring:
-    name: pulse-net                        name: pulse-net
+    name: pulse-targets                    name: pulse-targets
     external: true                         external: true
 ```
 
-Only `api` and `shop` join it. `shop-db` and `shop-redis` stay on shop's own
+Only `api`, `worker` and `shop` join it. `shop-db` and `shop-redis` stay on shop's own
 network: Pulse cannot reach them directly, exactly like a real dependency behind
 someone else's service, and only learns about them through `shop`'s `/ht/`.
 

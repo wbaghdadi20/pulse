@@ -134,8 +134,8 @@ flowchart LR
     host -- "8400" --> catcher
     host -- "127.0.0.1:5433" --> postgres
     host -- "8300" --> shop
-    api -. "pulse-net" .-> shop
-    worker -. "pulse-net" .-> shop
+    api -. "pulse-targets" .-> shop
+    worker -. "pulse-targets" .-> shop
     shop --> shopdb
     shop --> shopredis
 ```
@@ -143,7 +143,7 @@ flowchart LR
 | Network         | Members                                                   | Purpose                                 |
 | --------------- | --------------------------------------------------------- | --------------------------------------- |
 | `pulse_default` | api, worker, beat, redis, postgres, flaky, catcher        | Pulse's own traffic                     |
-| `pulse-net`     | api, worker, shop                                         | the only path from Pulse to shop        |
+| `pulse-targets` | api, worker, shop                                         | the only path from Pulse to shop        |
 | `shop_default`  | shop, shop-db, shop-redis                                 | shop's private dependencies             |
 
 `shop-db` and `shop-redis` are unreachable from Pulse by design.

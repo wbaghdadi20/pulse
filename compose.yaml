@@ -80,10 +80,10 @@ services:
       retries: 10
 
 # Shared with the separate `shop` project (shop/compose.yaml), so the api container
-# can reach shop by name. Created once by hand: docker network create pulse-net
+# can reach shop by name. Created once by hand: docker network create pulse-targets
 networks:
   monitoring:
-    name: pulse-net
+    name: pulse-targets
     external: true
 
 volumes:

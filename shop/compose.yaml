@@ -1,7 +1,7 @@
 # shop: a separate Compose project that Pulse monitors.
 #
-# Only shop joins the shared `pulse-net` network (created by Pulse's compose
-# file, so start Pulse first). shop-db and shop-redis stay private to this project:
+# Only shop joins the shared `pulse-targets` network (created once by hand:
+# docker network create pulse-targets). shop-db and shop-redis stay private to this project:
 # Pulse can only learn about them through shop's deep health check at /ht/.
 name: shop
 
@@ -44,7 +44,7 @@ services:
 
 networks:
   monitoring:
-    name: pulse-net
+    name: pulse-targets
     external: true
 
 volumes:
