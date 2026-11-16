@@ -1,0 +1,19 @@
+# Pulse as it is load-tested. Used instead of compose.override.yaml, so api is the
+# runtime image under gunicorn:
+#
+#   docker compose -f compose.yaml -f loadtest/compose.loadtest.yaml up -d --build --wait api
+#
+# Only api, postgres and redis start. Everything here overrides .env for this run
+# only: nothing has to be put back afterwards.
+services:
+  api:
+    environment:
+      DJANGO_DEBUG: "false"
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
+      # Seeded by loadtest/seed.py. The dev database is not touched.
+      POSTGRES_DB: pulse_loadtest
+      # The rate limit at its highest allowed value, and one trusted proxy: each
+      # Locust user sends its own X-Forwarded-For address, so it is counted as its
+      # own client instead of all fifty sharing one address and one limit.
+      PULSE_RATE_LIMIT_PER_MINUTE: "6000"
+      PULSE_NUM_PROXIES: "1"
