@@ -782,6 +782,7 @@ table after them lists every record.
 | [0022](docs/adr/0022-uptime-covering-index.md) | The uptime aggregate is answered from a covering index |
 | [0023](docs/adr/0023-json-assertions.md) | A deep health check is judged by the keys asked for, not by its status code |
 | [0024](docs/adr/0024-check-retention.md) | Raw checks are kept a week; older ones survive as hourly sums with latency buckets |
+| [0025](docs/adr/0025-live-status-page.md) | The status page updates by polling, and `/status` answers 304 when nothing changed |
 
 ## Known limits
 
