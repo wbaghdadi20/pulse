@@ -7,8 +7,9 @@ and serves a public status page.
 Built with Django, PostgreSQL, Celery, Redis and Docker Compose.
 
 How it fits together: [ARCHITECTURE.md](ARCHITECTURE.md) (C4 diagrams, data model,
-request and task flows). Why it is built this way: [docs/adr/](docs/adr/). How it
-was attacked and fixed: [SECURITY.md](SECURITY.md).
+request and task flows, the main decisions). Why it is built this way:
+[docs/adr/](docs/adr/). How it was attacked and fixed: [SECURITY.md](SECURITY.md).
+How much load it takes and what limits it: [LOADTEST.md](LOADTEST.md).
 
 ## Prerequisites
 
@@ -40,29 +41,37 @@ was attacked and fixed: [SECURITY.md](SECURITY.md).
 
    Also change `POSTGRES_PASSWORD` to a password of your choice.
 
-4. Create the network shared with the `shop` target, then build and start the stack:
+4. Create the network Pulse shares with the services it monitors, then build the
+   image and create the database tables. This starts Postgres and Redis too:
 
    ```bash
    docker network create pulse-targets
-   docker compose up --build -d --wait
+   docker compose run --rm api python manage.py migrate
    ```
 
-5. Create the database tables:
+5. Start Pulse:
 
    ```bash
-   docker compose exec api python manage.py migrate
+   docker compose up -d --wait
    ```
 
-6. Check it works:
+6. Start `shop`, a small service with its own database and Redis for Pulse to
+   watch. It is a separate Compose project (see _shop_ below):
+
+   ```bash
+   docker compose -f shop/compose.yaml up --build -d --wait
+   ```
+
+7. Check it works:
 
    ```bash
    curl -i http://localhost:8100/ready
    ```
 
    Expected: `HTTP/1.1 200 OK` with
-   `{"status": "ok", "checks": {"database": "ok", "redis": "ok"}}`.
+   `{"status":"ok","checks":{"database":"ok","redis":"ok"}}`.
 
-7. Create an account and log in. Everything except `/health`, `/ready` and
+8. Create an account and log in. Everything except `/health`, `/ready` and
    `/status` needs the token:
 
    ```bash
@@ -71,16 +80,42 @@ was attacked and fixed: [SECURITY.md](SECURITY.md).
    TOKEN=$(curl -s -X POST localhost:8100/login -H 'Content-Type: application/json' \
      -d '{"email": "you@example.com", "password": "a long passphrase"}' \
      | python3 -c 'import sys, json; print(json.load(sys.stdin)["access_token"])')
-   curl -H "Authorization: Bearer $TOKEN" localhost:8100/monitors/
    ```
 
    The token is valid for an hour. The examples below assume `$TOKEN` is set.
 
-8. Optional, for something worth monitoring: start the `shop` target (see _shop_ below):
+9. Add a monitor. This one checks `shop` every 10 seconds and is shown on the
+   status page:
 
    ```bash
-   docker compose -f shop/compose.yaml up --build -d
+   curl -X POST localhost:8100/monitors/ -H "Authorization: Bearer $TOKEN" \
+     -H 'Content-Type: application/json' \
+     -d '{"name": "shop", "url": "http://shop:8000/health", "timeout_s": 5, "interval_s": 10, "is_public": true}'
    ```
+
+   `url` is the address as Pulse's containers see it, so the service name
+   `shop`, not `localhost`. The fields and the other endpoints are under _API_.
+
+10. Open the status page, which needs no login:
+
+    ```bash
+    curl -s localhost:8100/status | python3 -m json.tool
+    ```
+
+    `shop` is listed with `"state": "up"`. `uptime_percent` is `null` until the
+    first check has run, and the page is cached for 15 seconds, so give it half
+    a minute.
+
+11. Optional: watch it notice an outage. Stop `shop`, and about 30 seconds later
+    (three failed checks) the status page says `"state": "down"` and a signed
+    alert is in the alert inbox at http://localhost:8400/. Start it again, and
+    after two passing checks the incident resolves and a second alert carries
+    the downtime:
+
+    ```bash
+    docker compose -f shop/compose.yaml stop shop
+    docker compose -f shop/compose.yaml start shop
+    ```
 
 ## Services and ports
 
@@ -283,7 +318,7 @@ loaded into Python. This is the SQL the ORM generates (`<since>` = now − days)
 ```sql
 SELECT AVG(("checks"."ok")::integer) AS "up_ratio",
        percentile_cont(0.95) WITHIN GROUP (ORDER BY "checks"."latency_ms") AS "p95_latency_ms",
-       COUNT("checks"."id") AS "checks"
+       COUNT(*) AS "checks"
 FROM "checks"
 WHERE ("checks"."checked_at" > <since> AND "checks"."monitor_id" = 4)
 ```
@@ -326,6 +361,14 @@ then `checked_at` because it's a range. Because it starts with `monitor_id`, it 
 covers lookups by monitor alone, so `checks.monitor` has no separate foreign-key
 index (`db_index=False`). Most of the remaining time is fetching the matching rows
 (`Heap Blocks: 2447`), because seeded rows are scattered randomly across the table.
+
+That remaining time is what the load test on D10 ran into. The index now also
+carries `ok` and `latency_ms` (`INCLUDE`, migration `0011`), the only two columns
+the query aggregates, so Postgres answers it from the index without visiting the
+table: an index-only scan. On 4.7 million checks, 30 days of one monitor went from
+about 8,200 pages read and 50 ms to about 50 pages and 1.5 ms. The measurements
+are in [LOADTEST.md](LOADTEST.md), the alternatives in
+[ADR 0022](docs/adr/0022-uptime-covering-index.md).
 
 ### The latest check, without N+1
 
