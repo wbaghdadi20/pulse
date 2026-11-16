@@ -22,7 +22,7 @@ control, and the demos need real failures on demand.
   connection failure.
 - `catcher` (FastAPI): verifies the signature, keeps alerts in memory, lists them.
 - `shop` (Django, its own Postgres and Redis, django-health-check): its own
-  Compose project, reached only over the shared `pulse-net` network. Its
+  Compose project, reached only over the shared `pulse-targets` network. Its
   database and cache are not on that network.
 
 `flaky` and `catcher` are FastAPI because they are a few routes with no
@@ -34,7 +34,7 @@ dependencies and a deep health check.
 - Failures are real: stopping `shop-redis` fails shop's deep check while its
   shallow one stays green, which Pulse can only tell apart with JSON assertions.
 - Pulse cannot cheat. It has no route to `shop-db` or `shop-redis`.
-- `pulse-net` is created by hand once, and Pulse must start before shop.
+- `pulse-targets` is created by hand once, before either project starts.
 - Three more images to build. `flaky` and `catcher` share Pulse's Compose file
   for convenience, although architecturally they are outside the system.
 - `catcher` keeps alerts in memory: restarting it empties the inbox.
