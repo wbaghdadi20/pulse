@@ -53,24 +53,123 @@ Locust rounds percentiles above 100 ms to the nearest 10.
 
 ### Running it
 
+Every command is typed on your machine, in the repository's root folder. Nothing
+is abbreviated: each line can be pasted as it is.
+
+How to read them:
+
+- `docker compose -f compose.yaml -f loadtest/compose.loadtest.yaml` means "Pulse
+  as described by these two files, the second on top of the first". Naming the
+  files also switches `compose.override.yaml` off, and that file is what turns
+  `api` into the development server. Plain `docker compose` (no `-f`) is the
+  development stack. For `up`, which creates containers, the difference decides
+  what gets created. For `exec`, `logs` and `stop`, which act on containers that
+  exist, both forms reach the same containers.
+- `exec <service> <command>` runs `<command>` inside a container that is already
+  running. `{api|worker|beat}` in a command means any one of those services
+  works there, and you type one of them.
+- `up -d --wait` starts containers in the background (`-d`) and returns once they
+  are running and healthy (`--wait`). `--build` builds the image first.
+
+**1. Stop what would write to the database during a test.** `worker` runs the
+checks and `beat` schedules them. Skip this if they are not running.
+
 ```bash
-# Pulse as it is tested: api (runtime image, gunicorn), postgres, redis
+docker compose stop worker beat
+```
+
+**2. Start Pulse as it is tested.** This rebuilds `api` as the `runtime` image and
+replaces the running `api` container with one that runs gunicorn with 4 workers,
+`DJANGO_DEBUG=false`, and the database name `pulse_loadtest`. `postgres` and
+`redis` are started if they are not running.
+
+```bash
 docker compose -f compose.yaml -f loadtest/compose.loadtest.yaml up -d --build --wait api
+```
 
-# once: the database, its tables, the data (about 30 s)
+**3. Create the empty database** (once). This runs `createdb` inside the
+`postgres` container. The single quotes matter: they make `$POSTGRES_USER` be
+read inside the container, where it is set, and not on your machine, where it is
+not.
+
+```bash
 docker compose exec postgres sh -c 'createdb -U "$POSTGRES_USER" pulse_loadtest'
+```
+
+**4. Create the tables in it** (once). `manage.py migrate` runs inside the `api`
+container, which is the one container pointed at `pulse_loadtest`. Run from
+`worker` or `beat` it would migrate the development database.
+
+```bash
 docker compose -f compose.yaml -f loadtest/compose.loadtest.yaml exec api python manage.py migrate
+```
+
+**5. Fill it** (once, about 30 seconds). `python manage.py shell` is Django's
+Python prompt, inside the `api` container. `< loadtest/seed.py` feeds it the file
+from your machine as if it were typed in, so the script runs with Django set up
+and the image does not need to contain it. `-T` tells Docker there is no keyboard
+attached: without it the command fails with "the input device is not a TTY".
+Again `api` only.
+
+```bash
 docker compose -f compose.yaml -f loadtest/compose.loadtest.yaml exec -T api python manage.py shell < loadtest/seed.py
+```
 
-# Locust, in its own virtualenv
-python3 -m venv loadtest/.venv && loadtest/.venv/bin/pip install -r loadtest/requirements.txt
+It prints `50 accounts, 500 monitors (20 public), 4666100 checks, 120 incidents`.
+Run a second time it prints `Already seeded.` and changes nothing.
+
+**6. Install Locust** (once). It goes into its own virtualenv in `loadtest/.venv`,
+on your machine and not in a container.
+
+```bash
+python3 -m venv loadtest/.venv
+loadtest/.venv/bin/pip install -r loadtest/requirements.txt
+```
+
+**7. Run the test.** `-f` is the file that describes the users, `--headless`
+means no web interface, `-u 50` is fifty users, `-r 5` starts five of them a
+second, `-t 2m` stops after two minutes, `--host` is where the requests go: the
+port `api` publishes on your machine.
+
+```bash
 loadtest/.venv/bin/locust -f loadtest/locustfile.py --headless -u 50 -r 5 -t 2m --host http://localhost:8100
+```
 
-# other worker counts
+The table it prints at the end has requests per second, the percentiles and the
+failures per endpoint. In a second terminal, while it runs:
+
+```bash
+docker stats pulse-api-1 pulse-postgres-1 pulse-redis-1
+```
+
+**8. Another number of workers.** Same command as step 2 with `WEB_CONCURRENCY`
+set in front, which replaces the `api` container with one running that many
+gunicorn workers. `{1|2|4|8|16}` are the values measured here. Then step 7 again.
+
+```bash
 WEB_CONCURRENCY=8 docker compose -f compose.yaml -f loadtest/compose.loadtest.yaml up -d --wait api
+```
 
-# back to the development stack
+**9. Look at a query plan.** This opens `psql` inside the `postgres` container on
+the load-test database. Paste a query after `EXPLAIN (ANALYZE, BUFFERS)`, and
+leave with `\q`.
+
+```bash
+docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d pulse_loadtest'
+```
+
+**10. Back to the development stack.** Without `-f`, `compose.override.yaml`
+applies again: `api` is rebuilt as the development image and replaced, and
+`worker` and `beat` start. The load-test database stays where it is.
+
+```bash
 docker compose up -d --build --wait
+```
+
+To delete the load-test database afterwards (about 550 MB):
+
+```bash
+docker compose exec postgres sh -c 'dropdb -U "$POSTGRES_USER" pulse_loadtest'
 ```
 
 ## Baseline

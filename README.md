@@ -136,15 +136,24 @@ alongside other local stacks. The `shop` target is a separate Compose project
 
 ## Everyday commands
 
+Typed in the repository's root folder. `{a|b|c}` means "one of these": type one
+name, without the braces. `<...>` is something you fill in.
+
 | Command                                              | What it does                                     |
 | ---------------------------------------------------- | ------------------------------------------------ |
 | `docker compose up --build -d --wait`                | Build and start everything in the background     |
 | `docker compose ps`                                  | Show running services and their health           |
-| `docker compose logs -f api`                         | Follow the app's logs (Ctrl+C stops following)   |
-| `docker compose logs -f worker`                      | Follow the checks and alerts as they run         |
-| `docker compose exec api python manage.py <command>` | Run a Django management command                  |
+| `docker compose logs -f {api\|worker\|beat\|postgres\|redis\|catcher\|flaky}` | Follow one service's logs (Ctrl+C stops following). `api`: requests. `worker`: checks and alerts as they run |
+| `docker compose exec {api\|worker\|beat} python manage.py <command>` | Run a Django management command inside a running container. The three run the same code, so any of them works |
+| `docker compose restart {api\|worker\|beat\|postgres\|redis\|catcher\|flaky}` | Stop and start one service              |
+| `docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'` | Open `psql` on Pulse's database (`\q` leaves) |
+| `docker compose -f shop/compose.yaml {stop\|start} {shop\|shop-db\|shop-redis}` | Stop or start one part of the `shop` target, a separate Compose project |
 | `docker compose down`                                | Stop everything (database data is kept)          |
 | `docker compose down -v`                             | Stop everything **and delete the database data** |
+
+`exec` runs a command in a container that is already running. `run --rm` starts a
+new one for the command and removes it afterwards, which is what the Quick start
+uses for `migrate` before anything is up.
 
 ## API
 
@@ -706,8 +715,13 @@ sends it back as `If-None-Match`, and while nothing has changed the answer is
 
 ```bash
 ETAG=$(curl -sI localhost:8100/status | tr -d '\r' | awk -F': ' 'tolower($1) == "etag" {print $2}')
-curl -s -o /dev/null -w '%{http_code}\n' -H "If-None-Match: $ETAG" localhost:8100/status   # 304
+curl -s -o /dev/null -w '%{http_code}\n' -H "If-None-Match: $ETAG" localhost:8100/status
 ```
+
+The first line asks for the headers only (`-I`), picks the `ETag` line out of
+them and keeps its value in `$ETAG`. The second sends that value back in
+`If-None-Match`, throws the body away (`-o /dev/null`) and prints only the
+status code: `304`. Without the header the same request prints `200`.
 
 Polling and not Server-Sent Events, because with sync gunicorn workers every open
 tab would hold a worker: [ADR 0025](docs/adr/0025-live-status-page.md).
@@ -741,12 +755,24 @@ their latencies counted in buckets. The hourly rows are kept for 91 days, one
 more than the longest window `/status` and the uptime endpoint read, so neither
 table grows with time.
 
-Beat queues the job at ten past every hour (`monitors.tasks.roll_up_checks`):
+Beat queues the job at ten past every hour (`monitors.tasks.roll_up_checks`), and
+a worker runs it. To see what it did, search the worker's log for its one line
+per run:
 
 ```bash
 docker compose logs worker | grep "rolled up"
-# "rolled up 72 monitor hours, deleted 0 checks and 0 old hours"
-docker compose exec worker celery -A config call monitors.tasks.roll_up_checks   # now, without waiting
+```
+
+It prints lines such as
+`rolled up 72 monitor hours, deleted 0 checks and 0 old hours`.
+
+To run it now and not at ten past: `celery call` puts one message on the queue
+and returns its id, and the worker picks it up within a second. The message can
+be sent from any container that has the code, so `{api|worker|beat}` all work
+(type one of them); the job itself always runs in `worker`.
+
+```bash
+docker compose exec worker celery -A config call monitors.tasks.roll_up_checks
 ```
 
 What a reader of the API sees:
