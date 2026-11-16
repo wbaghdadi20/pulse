@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pulse status</title>
+<style nonce="{{ nonce }}">
+  :root { color-scheme: light dark; --up: #1a7f37; --down: #cf222e; --muted: #6e7781; }
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 44rem; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; }
+  #summary { font-weight: 600; }
+  #summary.up { color: var(--up); }
+  #summary.down { color: var(--down); }
+  ul { list-style: none; padding: 0; }
+  .monitor { border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: 8px; padding: .75rem 1rem; margin: .5rem 0; }
+  .monitor.down { border-color: var(--down); }
+  .name { font-weight: 600; }
+  .state { float: right; font-weight: 600; text-transform: uppercase; font-size: .85rem; }
+  .up .state { color: var(--up); }
+  .down .state { color: var(--down); }
+  .numbers, .incident, footer { color: var(--muted); font-size: .9rem; }
+  .incident { margin: .25rem 0 0; }
+</style>
+</head>
+<body>
+<h1>Pulse status</h1>
+<p id="summary">Loading…</p>
+<noscript>This page needs JavaScript. The same data is at <a href="/status">/status</a>.</noscript>
+<ul id="monitors"></ul>
+<footer id="footer"></footer>
+
+<script nonce="{{ nonce }}">
+  const POLL_MS = {{ poll_seconds }} * 1000;
+  let etag = null;
+  let changedAt = null;
+
+  // Text only goes in through textContent: a monitor's name is whatever its owner typed.
+  function element(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function time(iso) {
+    return new Date(iso).toLocaleString();
+  }
+
+  function render(page) {
+    const down = page.monitors.filter((monitor) => monitor.state === "down");
+    const summary = document.getElementById("summary");
+    summary.className = down.length ? "down" : "up";
+    summary.textContent = page.monitors.length === 0
+      ? "No public monitors."
+      : down.length ? `${down.length} of ${page.monitors.length} down` : "All systems up";
+
+    const list = document.getElementById("monitors");
+    list.replaceChildren(...page.monitors.map((monitor) => {
+      const item = element("li", `monitor ${monitor.state}`);
+      item.append(element("span", "state", monitor.state), element("span", "name", monitor.name));
+      const numbers = monitor.uptime_percent === null
+        ? "No checks yet"
+        : `${monitor.uptime_percent}% up over ${page.window_days} days · p95 ${monitor.p95_latency_ms} ms`;
+      item.append(element("div", "numbers", numbers));
+      for (const incident of monitor.incidents) {
+        const ended = incident.resolved_at ? `resolved ${time(incident.resolved_at)}` : "ongoing";
+        item.append(element("p", "incident", `${time(incident.opened_at)} · ${incident.cause || incident.kind} · ${ended}`));
+      }
+      return item;
+    }));
+  }
+
+  function footer(answer) {
+    const changed = changedAt ? `changed ${changedAt.toLocaleTimeString()}` : "";
+    document.getElementById("footer").textContent =
+      `Asked ${new Date().toLocaleTimeString()} (${answer}) · ${changed} · asks every ${POLL_MS / 1000} s`;
+  }
+
+  async function refresh() {
+    if (document.hidden) return;  // nobody is looking: ask again when they are
+    try {
+      const response = await fetch("/status", {
+        // The browser's own cache is bypassed so the 304 reaches this script.
+        cache: "no-store",
+        headers: etag ? { "If-None-Match": etag } : {},
+      });
+      if (response.status === 304) {
+        footer("304 Not Modified");
+        return;
+      }
+      if (!response.ok) throw new Error(response.status);
+      etag = response.headers.get("ETag");
+      changedAt = new Date();
+      render(await response.json());
+      footer("200 OK");
+    } catch (error) {
+      footer("no answer, will ask again");
+    }
+  }
+
+  document.addEventListener("visibilitychange", refresh);
+  setInterval(refresh, POLL_MS);
+  refresh();
+</script>
+</body>
+</html>

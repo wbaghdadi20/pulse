@@ -4,6 +4,13 @@ Domain errors raised by services (MonitorNotFound, MonitorNameTaken) become
 404 / 409 in core/exception_handler.py, so there is no try/except here.
 """
 
+import secrets
+
+from django.http import HttpRequest, HttpResponse
+from django.http.response import HttpResponseBase
+from django.shortcuts import render
+from django.utils.cache import get_conditional_response
+from django.views.decorators.http import require_GET
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -16,6 +23,9 @@ from core.views import PublicAPIView
 from . import services, status_page
 from .models import Monitor
 from .serializers import IncidentSerializer, MonitorSerializer, UptimeQuerySerializer
+
+# How often the live page asks. Most answers are a 304, so asking often is cheap.
+LIVE_POLL_SECONDS = 5
 
 
 def own_monitor(request: Request, pk: int) -> Monitor:
@@ -95,7 +105,33 @@ class MonitorIncidentListView(APIView):
 
 
 class StatusPageView(PublicAPIView):
-    """/status : public."""
+    """/status : public. 304 with no body when the caller's copy still holds."""
 
-    def get(self, request: Request) -> Response:
-        return Response(status_page.get_status_page())
+    def get(self, request: Request) -> HttpResponseBase:
+        page, etag = status_page.get_status_page()
+        # Django's reading of If-None-Match: a list of tags, weak ones, and "*".
+        response = get_conditional_response(request._request, etag=etag) or Response(
+            page
+        )
+        response["ETag"] = etag
+        # A copy may be kept, but has to be checked with Pulse before each use.
+        response["Cache-Control"] = "no-cache"
+        return response
+
+
+@require_GET
+def status_live(request: HttpRequest) -> HttpResponse:
+    """/status/live : the status page for a browser. The HTML holds no data: its
+    script asks /status every few seconds and redraws when the answer changes."""
+    nonce = secrets.token_urlsafe(16)
+    response = render(
+        request,
+        "monitors/status_live.html",
+        {"nonce": nonce, "poll_seconds": LIVE_POLL_SECONDS},
+    )
+    # Only this page's own script and style run, and it may only call Pulse.
+    response["Content-Security-Policy"] = (
+        "default-src 'none'; connect-src 'self'; base-uri 'none'; "
+        f"frame-ancestors 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'"
+    )
+    return response
