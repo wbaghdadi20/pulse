@@ -16,6 +16,7 @@ How much load it takes and what limits it: [LOADTEST.md](LOADTEST.md).
 - [Git](https://git-scm.com/)
 - [Docker](https://docs.docker.com/get-docker/) with Docker Compose v2 (`docker compose version`)
 - Python 3 (only to generate a secret key; the app itself runs in Docker)
+- `make`, optional: shortcuts for the commands below (_Everyday commands_)
 
 ## Quick start
 
@@ -154,6 +155,26 @@ name, without the braces. `<...>` is something you fill in.
 `exec` runs a command in a container that is already running. `run --rm` starts a
 new one for the command and removes it afterwards, which is what the Quick start
 uses for `migrate` before anything is up.
+
+### Shortcuts
+
+The `Makefile` wraps the commands typed most. It is optional: each target prints
+the commands it runs, and they are the ones in the table above and in
+[LOADTEST.md](LOADTEST.md). `make` alone lists the targets. A value is given as
+`NAME=value` after the target.
+
+| Shortcut | What it does |
+| --- | --- |
+| `make up` | Creates the `pulse-targets` network if it is missing, applies migrations, then builds and starts Pulse and `shop`. Needs `.env` (Quick start, steps 2 and 3) |
+| `make down` | Stops Pulse and `shop`. Database data is kept |
+| `make migrate` | `manage.py migrate` in the running `api` container |
+| `make test` | All tests, in parallel. One file: `make test ARGS=tests/monitors/test_retention.py` |
+| `make logs SERVICE={api\|worker\|beat\|postgres\|redis\|catcher\|flaky}` | Follows one service's log. Without `SERVICE`, `api` |
+| `make psql` | Opens `psql` on Pulse's database. Another one: `make psql DB=pulse_loadtest` |
+| `make status` | Prints `up` or `down` and the name of each monitor on the status page |
+| `make rollup` | Queues the hourly roll-up of checks now (_Data retention_) |
+| `make demo-break`, `make demo-fix` | Stops, and starts, `shop-redis`: the deep monitor on `shop` fails while the shallow one stays up (_shop_) |
+| `make loadtest-up`, `make loadtest-seed`, `make loadtest`, `make loadtest-down` | The load test: [LOADTEST.md](LOADTEST.md), _Running it_ |
 
 ## API
 

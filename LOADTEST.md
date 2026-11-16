@@ -53,8 +53,31 @@ Locust rounds percentiles above 100 ms to the nearest 10.
 
 ### Running it
 
-Every command is typed on your machine, in the repository's root folder. Nothing
-is abbreviated: each line can be pasted as it is.
+**The short way.** Four `make` targets run the steps below, and print each
+command as they run it:
+
+```bash
+make loadtest-up
+make loadtest-seed
+make loadtest
+make loadtest-down
+```
+
+| Target | Steps below | With other values |
+| --- | --- | --- |
+| `make loadtest-up` | 1 and 2 | `make loadtest-up WORKERS={1\|2\|4\|8\|16}` is step 8 |
+| `make loadtest-seed` | 3, 4 and 5. Needed once | |
+| `make loadtest` | 6 (the first time) and 7 | `make loadtest USERS=100 RATE=10 DURATION=5m` |
+| `make loadtest-down` | 10 | |
+
+`make loadtest-seed` and `make loadtest` first ask the running `api` container
+which database it uses, and stop with "First: make loadtest-up" if it is not
+`pulse_loadtest`. Typed by hand, steps 4, 5 and 7 have no such check. Step 9 is
+`make psql DB=pulse_loadtest`.
+
+**The long way**, which is what those targets do. Every command is typed on your
+machine, in the repository's root folder. Nothing is abbreviated: each line can
+be pasted as it is.
 
 How to read them:
 
@@ -116,7 +139,9 @@ docker compose -f compose.yaml -f loadtest/compose.loadtest.yaml exec -T api pyt
 ```
 
 It prints `50 accounts, 500 monitors (20 public), 4666100 checks, 120 incidents`.
-Run a second time it prints `Already seeded.` and changes nothing.
+Run a second time it prints `Already seeded.` and changes nothing. Run against
+any database but `pulse_loadtest` it prints `Not the load-test database` and
+writes nothing.
 
 **6. Install Locust** (once). It goes into its own virtualenv in `loadtest/.venv`,
 on your machine and not in a container.
