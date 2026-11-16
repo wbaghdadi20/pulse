@@ -104,7 +104,8 @@ How much load it takes and what limits it: [LOADTEST.md](LOADTEST.md).
 
     `shop` is listed with `"state": "up"`. `uptime_percent` is `null` until the
     first check has run, and the page is cached for 15 seconds, so give it half
-    a minute.
+    a minute. In a browser, http://localhost:8100/status/live shows the same
+    page and updates by itself.
 
 11. Optional: watch it notice an outage. Stop `shop`, and about 30 seconds later
     (three failed checks) the status page says `"state": "down"` and a signed
@@ -147,7 +148,7 @@ alongside other local stacks. The `shop` target is a separate Compose project
 
 ## API
 
-Built with Django REST framework. The first five endpoints are public. Every
+Built with Django REST framework. The first six endpoints are public. Every
 other one needs `Authorization: Bearer <token>` and only ever sees the caller's
 own monitors: without a valid token it answers 401, and for someone else's
 monitor 404. Every response carries an `X-Request-ID` header (see _Logs_).
@@ -157,6 +158,7 @@ monitor 404. Every response carries an `X-Request-ID` header (see _Logs_).
 | `GET /health`                               | liveness: the process answers                     | 200     |               |
 | `GET /ready`                                | readiness: Postgres and Redis answer too          | 200     | 503           |
 | `GET /status`                               | public status page: state, 90-day uptime, p95, latest incidents of public monitors | 200 |         |
+| `GET /status/live`                          | the status page as HTML, for a browser: updates by itself | 200 |           |
 | `POST /signup`                              | create an account: `email`, `password`            | 201     | 400, 409, 429 |
 | `POST /login`                               | exchange `email` and `password` for a token       | 200     | 400, 401, 429 |
 | `POST /monitors/`                           | create a monitor                                  | 201     | 400, 409      |
@@ -691,6 +693,24 @@ once instead of up to 15 s later. Options and trade-offs:
 ```bash
 docker compose exec redis redis-cli -n 1 ttl :1:status:page   # Django prefixes keys with ":1:"
 ```
+
+### The live page
+
+http://localhost:8100/status/live is the same page for a browser. It asks
+`/status` every 5 seconds and redraws when something changed, so an incident
+shows up, and clears, with nobody refreshing.
+
+Most of those requests cost almost nothing. `/status` sends an `ETag`, the page
+sends it back as `If-None-Match`, and while nothing has changed the answer is
+`304 Not Modified` with no body:
+
+```bash
+ETAG=$(curl -sI localhost:8100/status | tr -d '\r' | awk -F': ' 'tolower($1) == "etag" {print $2}')
+curl -s -o /dev/null -w '%{http_code}\n' -H "If-None-Match: $ETAG" localhost:8100/status   # 304
+```
+
+Polling and not Server-Sent Events, because with sync gunicorn workers every open
+tab would hold a worker: [ADR 0025](docs/adr/0025-live-status-page.md).
 
 ### Benchmark
 
