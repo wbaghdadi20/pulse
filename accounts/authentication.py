@@ -1,6 +1,10 @@
+from django.db.models import OuterRef, Subquery
 from rest_framework.authentication import BaseAuthentication, get_authorization_header
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.request import Request
+
+from orgs.models import Membership
+from orgs.tenancy import current_tenant_id
 
 from . import tokens
 from .models import User
@@ -38,7 +42,15 @@ class JWTAuthentication(BaseAuthentication):
         except (tokens.InvalidToken, UnicodeError):
             return None
         # A token outlives its user: an account deleted since login is rejected too.
-        return User.objects.filter(pk=user_id).first()
+        users = User.objects.filter(pk=user_id)
+        org_id = current_tenant_id()
+        if org_id is not None:
+            # Inside a tenant, the caller's role there comes in the same query.
+            role = Membership.objects.filter(
+                user=OuterRef("pk"), organization_id=org_id
+            )
+            users = users.annotate(tenant_role=Subquery(role.values("role")[:1]))
+        return users.first()
 
 
 def current_user(request: Request) -> User:
