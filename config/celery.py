@@ -8,12 +8,13 @@ import logging.config
 import os
 from typing import Any
 
-from celery import Celery
 from celery.signals import setup_logging
+from tenant_schemas_celery.app import CeleryApp
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 
-app = Celery("pulse")
+# A task runs in the schema of whoever queued it: the schema travels in a header.
+app = CeleryApp("pulse")
 app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
 
