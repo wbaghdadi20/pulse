@@ -1,0 +1,22 @@
+# Spike only: run beside the development stack as `-p pulse-spike`, on other host
+# ports and off the shared pulse-targets network (its "api" alias would clash).
+services:
+  api:
+    ports: !override
+      - "8110:8000"
+    networks: !override
+      - default
+
+  worker:
+    networks: !override
+      - default
+
+  postgres:
+    ports: !override
+      - "127.0.0.1:5443:5432"
+
+  catcher:
+    ports: !override []
+
+  flaky:
+    ports: !override []
