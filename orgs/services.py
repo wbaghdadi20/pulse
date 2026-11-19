@@ -29,6 +29,7 @@ def create_organization(
     use_public()
     org = Organization(name=name, slug=slug, schema_name=schema_for(slug))
     org.save(verbosity=0)
+    restore_constraint_names(org.schema_name)
     Domain.objects.create(domain=slug, tenant=org, is_primary=True)
     if owner is not None:
         Membership.objects.create(user=owner, organization=org)
@@ -54,3 +55,35 @@ def migrate_template() -> None:
         interactive=False,
         verbosity=0,
     )
+
+
+# The clone function recreates UNIQUE constraints under Postgres's default names
+# (uq_monitor_owner_name -> monitors_owner_id_name_key). Code and later migrations
+# name them, so give each back the template's name.
+_RENAMED_CONSTRAINTS = """
+SELECT cls.relname, made.conname, orig.conname
+FROM pg_constraint orig
+JOIN pg_class orig_cls ON orig_cls.oid = orig.conrelid
+JOIN pg_namespace orig_ns ON orig_ns.oid = orig.connamespace
+JOIN pg_class cls ON cls.relname = orig_cls.relname
+JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+JOIN pg_constraint made ON made.conrelid = cls.oid
+    AND made.contype = orig.contype
+    AND pg_get_constraintdef(made.oid) = pg_get_constraintdef(orig.oid)
+WHERE orig_ns.nspname = %s AND ns.nspname = %s
+    AND orig.contype IN ('u', 'c', 'p', 'x') AND made.conname <> orig.conname
+"""
+
+
+def restore_constraint_names(schema: str) -> int:
+    from django.conf import settings
+
+    template = settings.TENANT_BASE_SCHEMA
+    with connection.cursor() as cursor:
+        cursor.execute(_RENAMED_CONSTRAINTS, [template, schema])
+        renames = cursor.fetchall()
+        for table, made, orig in renames:
+            cursor.execute(
+                f'ALTER TABLE "{schema}"."{table}" RENAME CONSTRAINT "{made}" TO "{orig}"'
+            )
+    return len(renames)
