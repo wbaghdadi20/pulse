@@ -73,6 +73,7 @@ class Command(BaseCommand):
                         name=f"m{j}",
                         url="http://target:8000/health",
                         interval_s=10,
+                        timeout_s=5,
                     )
                     for j in range(opts["monitors"])
                 )
