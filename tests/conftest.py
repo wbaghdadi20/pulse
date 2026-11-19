@@ -26,6 +26,9 @@ from accounts import tokens
 from accounts.models import User
 from monitors import clients, ssrf
 from monitors.models import Monitor
+from orgs import services as orgs
+from orgs.models import Membership, Organization
+from orgs.tenancy import current_tenant_id, use_public
 
 # Property tests: a fast everyday profile, a thorough one for CI.
 # Select with HYPOTHESIS_PROFILE=ci pytest
@@ -48,11 +51,76 @@ MONITOR_PAYLOAD = {
 }
 OWNER_EMAIL = "owner@example.com"
 
+# Two organizations exist in every test database; tests run in the first by default
+# when PULSE_TEST_IN_TENANT=1 (the spike's way of measuring the whole suite).
+TENANT_SLUGS = ("acme", "globex")
+ALL_IN_TENANT = os.environ.get("PULSE_TEST_IN_TENANT") == "1"
+PUBLIC_PATHS = ("/t/", "/health", "/ready", "/signup", "/login")
+
+
+@pytest.fixture(scope="session")
+def django_db_setup(django_db_setup, django_db_blocker):
+    """The public tenant, the template and both organizations, once per database.
+    Outside any test transaction: creating a schema is DDL that must commit."""
+    with django_db_blocker.unblock():
+        orgs.ensure_public_tenant()
+        orgs.migrate_template()
+        for slug in TENANT_SLUGS:
+            if not Organization.objects.filter(slug=slug).exists():
+                orgs.create_organization(slug.title(), slug)
+        use_public()
+
+
+def organization(slug: str) -> Organization:
+    org = Organization.objects.get(slug=slug)
+    assert isinstance(org, Organization)
+    return org
+
+
+@pytest.fixture
+def acme(db) -> Iterator[Organization]:
+    """The test runs inside acme's schema."""
+    org = organization("acme")
+    with org:
+        yield org
+
+
+@pytest.fixture
+def globex(db) -> Organization:
+    """The second organization, not entered: `with globex:` to work in it."""
+    return organization("globex")
+
+
+@pytest.fixture(autouse=ALL_IN_TENANT)
+def in_tenant(request) -> None:
+    """With PULSE_TEST_IN_TENANT=1, every test that touches the database runs in acme."""
+    if "django_db" in request.keywords or "db" in request.fixturenames:
+        request.getfixturevalue("acme")
+
+
+class TenantClient(APIClient):
+    """APIClient that sends tenant URLs to one organization: /monitors/ -> /t/acme/monitors/."""
+
+    def __init__(self, slug: str = "acme", **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.prefix = f"/t/{slug}"
+
+    def request(self, **request: Any) -> Any:
+        path = request["PATH_INFO"]
+        if not path.startswith(PUBLIC_PATHS):
+            request["PATH_INFO"] = self.prefix + path
+        return super().request(**request)
+
 
 def default_owner() -> User:
-    """The account behind the `user` and `api` fixtures. No usable password."""
+    """The account behind the `user` and `api` fixtures. No usable password.
+    Inside a tenant it is a member there, so the tenant's endpoints let it in."""
     existing = User.objects.filter(email=OWNER_EMAIL).first()
-    return existing or User.objects.create_user(OWNER_EMAIL)
+    user = existing or User.objects.create_user(OWNER_EMAIL)
+    tenant_id = current_tenant_id()
+    if tenant_id is not None:
+        Membership.objects.get_or_create(user=user, organization_id=tenant_id)
+    return user
 
 
 def create_monitor(owner: User | None = None, **fields: Any) -> Monitor:
@@ -62,9 +130,11 @@ def create_monitor(owner: User | None = None, **fields: Any) -> Monitor:
     )
 
 
-def client_for(user: User) -> APIClient:
+def client_for(user: User, slug: str | None = None) -> APIClient:
     """A client that sends this user's token, issued directly instead of through /login."""
-    client = APIClient()
+    client = (
+        TenantClient(slug) if slug else TenantClient() if ALL_IN_TENANT else APIClient()
+    )
     client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens.issue(user.pk)}")
     return client
 
@@ -84,7 +154,7 @@ def api(user) -> APIClient:
 @pytest.fixture
 def anon() -> APIClient:
     """The same client with no token."""
-    return APIClient()
+    return TenantClient() if ALL_IN_TENANT else APIClient()
 
 
 @pytest.fixture
@@ -97,7 +167,10 @@ def monitor(db) -> Monitor:
 def local_cache(settings) -> None:
     """Every test starts with an empty in-process cache instead of the dev Redis."""
     settings.CACHES = {
-        "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "KEY_FUNCTION": "django_tenants.cache.make_key",
+        }
     }
     cache.clear()
 
