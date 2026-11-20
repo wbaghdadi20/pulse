@@ -1193,6 +1193,7 @@ All settings come from environment variables in `.env` (never committed).
 | `PULSE_FAIL_THRESHOLD` | Failed checks in a row before an incident opens. 1–10, default `3`.   |
 | `PULSE_OK_THRESHOLD`   | Successful checks in a row before it resolves. 1–10, default `2`.     |
 | `PULSE_RAW_CHECK_DAYS` | Days a check is kept as its own row before only its hour's sums remain. 1–365, default `7`. |
+| `PULSE_SIGNUP_LOCK_TIMEOUT_MS` | Milliseconds a signup waits for its turn to create its organization (they are created one at a time) before answering 503. 100–30,000, default `2000`. |
 | `CELERY_BROKER_URL`    | The queue. `redis://redis:6379/0` inside Docker. Required.            |
 | `PULSE_WEBHOOK_URL`    | Where alerts are POSTed. Defaults to `http://catcher:8000/webhook`.   |
 | `PULSE_WEBHOOK_SECRET` | Shared with the catcher; alerts are HMAC-signed with it. Required.    |
@@ -1226,8 +1227,11 @@ variable's name. `tests/config/` covers them with Hypothesis.
   migrated: its monitors are in `public`. Recreate it, which deletes its data:
   `docker compose down -v`, then `docker compose run --rm api python manage.py migrate_all`
   (Quick start, step 4). `make up` runs the second command too.
-- **`TemplateNotReady` on signup**: the template schema is missing or behind the
-  code. `make migrate`.
+- **Signup answers 503**: with `Retry-After: 5`, other signups were being created
+  and this one waited longer than `PULSE_SIGNUP_LOCK_TIMEOUT_MS`; try again. With
+  `Retry-After: 30`, the template schema is missing, or behind or ahead of the
+  code that is running (the log says which, under `organization not created`):
+  `make migrate` with the deployed code, or finish the deploy.
 - **A monitor on `http://api:8000/ready` reports `wrong_status` with 400**: `api`
   is missing from `DJANGO_ALLOWED_HOSTS`. `blocked` means it is missing from
   `PULSE_ALLOWED_PRIVATE_HOSTS`.

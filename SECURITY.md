@@ -266,7 +266,8 @@ ordinary apostrophe was a syntax error.
 **The fix.** Bound parameters: `cursor.execute("... WHERE owner_id = %s AND name =
 %s", [owner_id, name])`. The statement and the values travel separately and the
 database never parses a value. The Django ORM does this for every query, and so
-does Pulse's one raw statement (`seed_checks`).
+does every raw statement Pulse has: `seed_checks`, the roll-up, and since ticket 1
+the statements of `orgs/services.py`.
 
 **The test.** `tests/monitors/test_sql_injection.py` holds both versions and runs
 the same inputs through each. Through the API, the attack string is stored and
@@ -274,12 +275,15 @@ returned as a plain monitor name.
 
 **Since ticket 1.** A slug becomes part of SQL that cannot take parameters: a
 schema name in `CREATE SCHEMA`, `SET search_path` and `ALTER TABLE ... RENAME`.
-So a slug is checked before any SQL runs (lowercase letters, digits and single
-hyphens, 3 to 40 characters, not reserved), and every identifier is quoted by
-`psycopg.sql.Identifier`, never formatted into the text.
-`tests/orgs/test_organizations.py::test_a_hostile_slug_is_refused_before_any_sql`
-sends `x"; DROP SCHEMA public CASCADE; --` and others through the service and
-`/signup`, and asserts that no query ran at all.
+The guarantee is the slug check: a slug is checked before any SQL runs
+(lowercase letters, digits and single hyphens, 3 to 40 characters, not reserved),
+so a schema name is only ever `org_` and such a slug. On top of that, the
+identifiers Pulse's own SQL names are quoted by `psycopg.sql.Identifier`, never
+formatted into the text; django-tenants quotes the ones in its SQL itself.
+`test_a_hostile_slug_is_refused_before_any_sql`, in `tests/orgs/test_organizations.py`
+and `tests/accounts/test_signup_organization.py`, sends
+`x"; DROP SCHEMA public CASCADE; --` and others through the service and `/signup`,
+and asserts that no query ran at all.
 
 ## Secrets
 
@@ -309,9 +313,11 @@ own `GITHUB_TOKEN`, and only the publishing job has `packages: write`.
 
 | Limit | Effect |
 | ----- | ------ |
-| A token cannot be revoked | a stolen token works until it expires (one hour by default). Deleting the account does stop it |
+| A token cannot be revoked | a stolen token works until it expires (one hour by default). Accounts cannot be deleted or deactivated yet either (ticket 3) |
 | Signup answers 409 for a registered email | it reveals who has an account. Hiding that needs email verification |
 | Signup answers 409 for a taken slug | it reveals that an organization exists. Slugs are not secret anyway: every organization's status page is public |
+| Anyone can sign up, and every signup creates a schema that stays | only the limit of 5 signups a minute per address bounds how many; each one adds to the catalog, to `migrate_all` and to beat's tick, whose budget lasts to about 850 idle organizations. Limits are ticket 5's |
+| A well-formed but unknown slug is looked up every time, before any rate limit | each such request costs a query; revisited in subtask 1.3 |
 | A tenant row's membership id has no database constraint | Postgres would accept a dangling or foreign id; only the services refuse one ([ADR 0026](docs/adr/0026-schema-per-tenant.md)) |
 | Redirects are not followed | a monitor of a URL that redirects records the 3xx. Following them safely means judging every hop; see [ADR 0015](docs/adr/0015-ssrf-guard.md) |
 | Creating a monitor for an internal name answers 400, an unknown name 201 | the difference tells a user which internal names resolve |
