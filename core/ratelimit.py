@@ -9,9 +9,13 @@ import time
 from collections.abc import Callable
 from typing import NamedTuple
 
-from django.core.cache import cache
+from django.core.cache import caches
+from django.utils.connection import ConnectionProxy
 
 WINDOW_S = 60
+# Not the default cache, whose keys carry the organization's schema: one count per
+# client across every organization it calls.
+counters = ConnectionProxy(caches, "ratelimit")
 
 
 class Decision(NamedTuple):
@@ -32,6 +36,6 @@ def fixed_window(key: str, limit: int, now: float | None = None) -> Decision:
     """
     window, elapsed = divmod(int(time.time() if now is None else now), WINDOW_S)
     counter = f"rl:{key}:{window}"
-    cache.add(counter, 0, timeout=WINDOW_S)
-    count: int = cache.incr(counter)
+    counters.add(counter, 0, timeout=WINDOW_S)
+    count: int = counters.incr(counter)
     return Decision(allowed=count <= limit, retry_after=WINDOW_S - elapsed)

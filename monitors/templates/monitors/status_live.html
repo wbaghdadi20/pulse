@@ -1,4 +1,5 @@
 <!doctype html>
+{% url "status-page" as status_url %}
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -25,7 +26,7 @@
 <body>
 <h1>Pulse status</h1>
 <p id="summary">Loading…</p>
-<noscript>This page needs JavaScript. The same data is at <a href="/status">/status</a>.</noscript>
+<noscript>This page needs JavaScript. The same data is at <a href="{{ status_url }}">{{ status_url }}</a>.</noscript>
 <ul id="monitors"></ul>
 <footer id="footer"></footer>
 
@@ -79,7 +80,7 @@
   async function refresh() {
     if (document.hidden) return;  // nobody is looking: ask again when they are
     try {
-      const response = await fetch("/status", {
+      const response = await fetch("{{ status_url|escapejs }}", {
         // The browser's own cache is bypassed so the 304 reaches this script.
         cache: "no-store",
         headers: etag ? { "If-None-Match": etag } : {},

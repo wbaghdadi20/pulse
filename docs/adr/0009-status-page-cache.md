@@ -1,6 +1,6 @@
 # 9. The status page is cached by key and dropped when an incident changes
 
-- Status: accepted
+- Status: accepted, amended 2026-11-20 (ticket 1, subtask 1.2)
 - Date: 2026-11-11 (D7)
 
 ## Context
@@ -70,3 +70,10 @@ workers, 2000 requests from 50 concurrent clients:
   Option 1 is the fix for that and composes with this one.
 - The page is identical for everyone, holds no monitor URLs and, since D8, only
   monitors marked public, so one shared cached copy is safe.
+
+## Amended 2026-11-20 (ticket 1, subtask 1.2)
+
+The page is per organization, at `/t/<slug>/status`. The cache's key function is
+`django_tenants.cache.make_key`, so the key `status:page` is stored as
+`<schema>::1:status:page`, one per organization, and an incident in one never
+drops another's page ([ADR 0026](0026-schema-per-tenant.md)).

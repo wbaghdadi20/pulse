@@ -2,7 +2,8 @@
 
 Pulse is an uptime monitor and status page. It checks HTTP services on a schedule,
 records every result, opens and resolves incidents, sends signed alerts to a webhook,
-and serves a public status page.
+and serves a public status page. Each customer is an organization with its own
+Postgres schema, and its API is under `/t/<slug>/`.
 
 Built with Django, PostgreSQL, Celery, Redis and Docker Compose.
 
@@ -47,7 +48,19 @@ How much load it takes and what limits it: [LOADTEST.md](LOADTEST.md).
 
    ```bash
    docker network create pulse-targets
-   docker compose run --rm api python manage.py migrate
+   docker compose run --rm api python manage.py migrate_all
+   ```
+
+   `migrate_all` migrates the shared schema (`public`), then the template schema
+   new organizations are copied from, then every organization (_Database_).
+
+   **A database from before organizations** (anything older than ticket 1) is
+   recreated, not migrated: it holds no real users, and its monitors are in
+   `public`, where no monitor table exists any more. This deletes all its data:
+
+   ```bash
+   docker compose down -v
+   docker compose run --rm api python manage.py migrate_all
    ```
 
 5. Start Pulse:
@@ -72,24 +85,32 @@ How much load it takes and what limits it: [LOADTEST.md](LOADTEST.md).
    Expected: `HTTP/1.1 200 OK` with
    `{"status":"ok","checks":{"database":"ok","redis":"ok"}}`.
 
-8. Create an account and log in. Everything except `/health`, `/ready` and
-   `/status` needs the token:
+8. Sign up, which creates your account and your organization with you as its
+   owner, and log in. Everything except `/health`, `/ready` and an organization's
+   status page needs the token:
 
    ```bash
    curl -X POST localhost:8100/signup -H 'Content-Type: application/json' \
-     -d '{"email": "you@example.com", "password": "a long passphrase"}'
+     -d '{"email": "you@example.com", "password": "a long passphrase", "organization_name": "My team", "slug": "my-team"}'
    TOKEN=$(curl -s -X POST localhost:8100/login -H 'Content-Type: application/json' \
      -d '{"email": "you@example.com", "password": "a long passphrase"}' \
      | python3 -c 'import sys, json; print(json.load(sys.stdin)["access_token"])')
    ```
 
-   The token is valid for an hour. The examples below assume `$TOKEN` is set.
+   The slug is in every URL of the organization and never changes: 3 to 40
+   lowercase letters, digits and single hyphens, starting with a letter. The token
+   is valid for an hour. The examples below assume `$TOKEN` is set and use the
+   organization `my-team`.
+
+   Or, instead of this step and the next, `make seed` creates two demo
+   organizations with their owners, `acme` (with the `shop` monitors) and `globex`,
+   and prints how to log in as each (_Shortcuts_).
 
 9. Add a monitor. This one checks `shop` every 10 seconds and is shown on the
    status page:
 
    ```bash
-   curl -X POST localhost:8100/monitors/ -H "Authorization: Bearer $TOKEN" \
+   curl -X POST localhost:8100/t/my-team/monitors/ -H "Authorization: Bearer $TOKEN" \
      -H 'Content-Type: application/json' \
      -d '{"name": "shop", "url": "http://shop:8000/health", "timeout_s": 5, "interval_s": 10, "is_public": true}'
    ```
@@ -100,12 +121,12 @@ How much load it takes and what limits it: [LOADTEST.md](LOADTEST.md).
 10. Open the status page, which needs no login:
 
     ```bash
-    curl -s localhost:8100/status | python3 -m json.tool
+    curl -s localhost:8100/t/my-team/status | python3 -m json.tool
     ```
 
     `shop` is listed with `"state": "up"`. `uptime_percent` is `null` until the
     first check has run, and the page is cached for 15 seconds, so give it half
-    a minute. In a browser, http://localhost:8100/status/live shows the same
+    a minute. In a browser, http://localhost:8100/t/my-team/status/live shows the same
     page and updates by itself.
 
 11. Optional: watch it notice an outage. Stop `shop`, and about 30 seconds later
@@ -154,7 +175,7 @@ name, without the braces. `<...>` is something you fill in.
 
 `exec` runs a command in a container that is already running. `run --rm` starts a
 new one for the command and removes it afterwards, which is what the Quick start
-uses for `migrate` before anything is up.
+uses for `migrate_all` before anything is up.
 
 ### Shortcuts
 
@@ -167,14 +188,15 @@ the commands it runs, and they are the ones in the table above and in
 | --- | --- |
 | `make up` | Creates the `pulse-targets` network if it is missing, applies migrations, then builds and starts Pulse and `shop`. Needs `.env` (Quick start, steps 2 and 3) |
 | `make down` | Stops Pulse and `shop`. Database data is kept |
-| `make migrate` | `manage.py migrate` in the running `api` container |
+| `make migrate` | `manage.py migrate_all` in the running `api` container: the shared schema `public`, then the template schema new organizations are copied from, then every organization, oldest first. It stops at the first schema that fails and names it |
+| `make seed` | `manage.py seed_demo`: the organizations `acme` and `globex`, an owner in each (`owner@acme.test`, `owner@globex.test`; it prints their passwords), and the `shop` and `shop deep` monitors, public, in `acme`. Running it again adds nothing. Development only: the passwords are in the code, so it refuses to run unless `DJANGO_DEBUG` is `true` |
 | `make test` | All tests, in parallel. One file: `make test ARGS=tests/monitors/test_retention.py` |
 | `make logs SERVICE={api\|worker\|beat\|postgres\|redis\|catcher\|flaky}` | Follows one service's log. Without `SERVICE`, `api` |
 | `make psql` | Opens `psql` on Pulse's database. Another one: `make psql DB=pulse_loadtest` |
-| `make explain MONITOR=<id> DAYS={7\|30\|90}` | `EXPLAIN (ANALYZE, BUFFERS)` of the uptime query: how Postgres runs it, how long it took and how many pages it read. On the seeded data: `make explain DB=pulse_loadtest MONITOR=123 DAYS=30` |
-| `make status` | Prints `up` or `down` and the name of each monitor on the status page |
+| `make explain ORG=<slug> MONITOR=<id> DAYS={7\|30\|90}` | `EXPLAIN (ANALYZE, BUFFERS)` of the uptime query in that organization's schema (`ORG` defaults to `acme`): how Postgres runs it, how long it took and how many pages it read. On the data `seed_checks` adds to `acme`: `make explain ORG=acme MONITOR=<a seed-N id> DAYS=30` |
+| `make status` | Prints `up` or `down` and the name of each monitor on `acme`'s status page. Another organization: `make status ORG=my-team` |
 | `make rollup` | Queues the hourly roll-up of checks now (_Data retention_) |
-| `make demo-ready` | Checks what an outage demo needs: Pulse, `worker` and `beat`, the three `shop` containers, the catcher, every monitor up. Each line is `ok`, or `FAIL` with the command that fixes it |
+| `make demo-ready` | Checks what an outage demo needs: Pulse, `worker` and `beat`, the three `shop` containers, the catcher, every monitor on `acme`'s status page up (`make seed` puts them there). Each line is `ok`, or `FAIL` with the command that fixes it |
 | `make demo-break` | Stops `shop-redis`. The deep monitor on `shop` fails while the shallow one stays up (_shop_). **Undo: `make demo-fix`** |
 | `make demo-fix` | Starts `shop-redis` again |
 | `make demo-watch` | Follows the worker's log, showing only failed checks and alerts sent. Ctrl+C stops it |
@@ -184,31 +206,34 @@ the commands it runs, and they are the ones in the table above and in
 ## API
 
 Built with Django REST framework. The first six endpoints are public. Every
-other one needs `Authorization: Bearer <token>` and only ever sees the caller's
-own monitors: without a valid token it answers 401, and for someone else's
-monitor 404. Every response carries an `X-Request-ID` header (see _Logs_).
+other one needs `Authorization: Bearer <token>`: without a valid token it answers
+401. Endpoints about the person or the process are at the root; everything about
+monitors is an organization's, under `/t/<slug>/`, and runs in that organization's
+schema. There, an unknown slug answers 404, a valid token that is not a member of
+the organization 404 too, and a monitor assigned to someone else 404. Every
+response carries an `X-Request-ID` header (see _Logs_).
 
 | Method + URL                                | Does                                              | Success | Errors        |
 | ------------------------------------------- | ------------------------------------------------- | ------- | ------------- |
 | `GET /health`                               | liveness: the process answers                     | 200     |               |
 | `GET /ready`                                | readiness: Postgres and Redis answer too          | 200     | 503           |
-| `GET /status`                               | public status page: state, 90-day uptime, p95, latest incidents of public monitors | 200 |         |
-| `GET /status/live`                          | the status page as HTML, for a browser: updates by itself | 200 |           |
-| `POST /signup`                              | create an account: `email`, `password`            | 201     | 400, 409, 429 |
+| `GET /t/<slug>/status`                      | the organization's public status page: state, 90-day uptime, p95, latest incidents of its public monitors | 200 | 404 |
+| `GET /t/<slug>/status/live`                 | the status page as HTML, for a browser: updates by itself | 200 | 404       |
+| `POST /signup`                              | create an account and its organization: `email`, `password`, `organization_name`, `slug`. Answers the account and `organization` (`slug`, `name`, `role`) | 201 | 400, 409, 429 |
 | `POST /login`                               | exchange `email` and `password` for a token       | 200     | 400, 401, 429 |
-| `POST /monitors/`                           | create a monitor                                  | 201     | 400, 409      |
-| `GET /monitors/?limit&offset` or `?after`   | list monitors (paginated)                         | 200     | 400           |
-| `GET /monitors/<id>/`                       | get one monitor                                   | 200     | 404           |
-| `PATCH /monitors/<id>/`                     | change some fields (incl. `maintenance_until`)    | 200     | 400, 404, 409 |
-| `DELETE /monitors/<id>/`                    | delete a monitor                                  | 204     | 404           |
-| `POST /monitors/<id>/check/`                | call the monitor's URL once and record the result | 200     | 404           |
-| `GET /monitors/<id>/uptime/?days=7\|30\|90` | uptime %, p95 latency and check count             | 200     | 400, 404      |
-| `POST /monitors/<id>/incidents/`            | open an incident by hand                          | 201     | 404, 409      |
+| `POST /t/<slug>/monitors/`                  | create a monitor                                  | 201     | 400, 409      |
+| `GET /t/<slug>/monitors/?limit&offset` or `?after` | list monitors (paginated)                         | 200     | 400           |
+| `GET /t/<slug>/monitors/<id>/`              | get one monitor                                   | 200     | 404           |
+| `PATCH /t/<slug>/monitors/<id>/`            | change some fields (incl. `maintenance_until`)    | 200     | 400, 404, 409 |
+| `DELETE /t/<slug>/monitors/<id>/`           | delete a monitor                                  | 204     | 404           |
+| `POST /t/<slug>/monitors/<id>/check/`       | call the monitor's URL once and record the result | 200     | 404           |
+| `GET /t/<slug>/monitors/<id>/uptime/?days=7\|30\|90` | uptime %, p95 latency and check count             | 200     | 400, 404      |
+| `POST /t/<slug>/monitors/<id>/incidents/`   | open an incident by hand                          | 201     | 404, 409      |
 
 Example:
 
 ```bash
-curl -X POST http://localhost:8100/monitors/ -H "Authorization: Bearer $TOKEN" \
+curl -X POST http://localhost:8100/t/my-team/monitors/ -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name": "httpbin", "url": "https://httpbin.org/get", "timeout_s": 5, "interval_s": 30}'
 ```
@@ -220,10 +245,15 @@ Conventions:
   dependency `get_current_user` is, in DRF, an authentication class
   (`accounts.authentication.JWTAuthentication`) plus `IsAuthenticated` as the
   default permission. [ADR 0013](docs/adr/0013-authentication.md).
-- **A monitor belongs to whoever created it.** The owner comes from the token,
-  never from the body, and names are unique per owner.
-  [ADR 0014](docs/adr/0014-ownership.md).
-- **`is_public`** (default `false`) puts a monitor on `/status`.
+- **Organizations.** Signing up creates an organization with you as its owner
+  (`owner` is the only role so far). Its slug is in every URL of the
+  organization and never changes. One account can be a member of several
+  organizations. [ADR 0026](docs/adr/0026-schema-per-tenant.md).
+- **A monitor belongs to its organization and is assigned to whoever created
+  it.** The assignee is the caller's membership, from the token, never from the
+  body. Names are unique in the organization: a name a colleague uses is a 409
+  that does not say whose. [ADR 0014](docs/adr/0014-ownership.md).
+- **`is_public`** (default `false`) puts a monitor on its organization's status page.
 - **Monitor URLs must be on a public address.** A host that resolves to a private,
   loopback, link-local or otherwise internal address is refused with a 400 when
   the monitor is created or edited, and a check of one that turns internal later
@@ -232,12 +262,13 @@ Conventions:
   [ADR 0015](docs/adr/0015-ssrf-guard.md).
 - **Rate limits** are per client address and per clock minute: 60 requests on the
   API, 5 on `/login` and `/signup` together. Over the limit is a 429 with
-  `Retry-After`. `/health` and `/status` are not limited.
+  `Retry-After`. `/health` and the status page are not limited. One count per
+  client, however many organizations it calls.
   [ADR 0016](docs/adr/0016-rate-limiting.md).
 
 - **Invalid input returns 400** with one message per field. That is DRF's
   convention (FastAPI uses 422).
-- **URLs end with a slash** (`/monitors/`), the Django convention. A `POST` without
+- **URLs end with a slash** (`/t/<slug>/monitors/`), the Django convention. A `POST` without
   the slash fails, because Django can't redirect a `POST` and keep its body.
 - **Pagination** uses `?limit=` (default 20, max 100) and `?offset=`. The response is
   `{"count": <total>, "next": <url>, "previous": <url>, "results": [...]}`.
@@ -332,15 +363,26 @@ Idempotent means calling it twice leaves the system in the same state as calling
 
 ## Database
 
-Postgres, through the Django ORM. Tables: `monitors`, `checks` (one row per check
-result) and `incidents` (one row per outage; `resolved_at` is empty while it's open).
+Postgres, through the Django ORM, with one schema per organization
+([ADR 0026](docs/adr/0026-schema-per-tenant.md)). `public` holds what is shared:
+`users`, `organizations`, `organization_domains` (each slug, for django-tenants)
+and `memberships` (who is in which organization, with which role). Each
+organization's schema, `org_` and its slug with `_` for `-` (`org_my_team`), holds
+its `monitors`, `checks` (one row per check result), `check_hours`, `incidents`
+(one row per outage; `resolved_at` is empty while it's open) and `alerts`. A new
+organization's schema is a copy of `tenant_template`, which `migrate_all` keeps
+migrated.
+
+In `psql`, an organization's tables are found once its schema is on the search
+path: `SET search_path TO org_my_team;` (`\dn` lists the schemas). The SQL below
+assumes it.
 
 | Command (prefix with `docker compose exec api`) | What it does                                                                                                  |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `python manage.py migrate`                      | apply all migrations (on an empty database: creates every table and index)                                    |
+| `python manage.py migrate_all`                  | apply all migrations: `public`, then the template, then every organization (on an empty database: creates every table and index) |
 | `python manage.py makemigrations`               | generate a migration after changing `models.py`                                                               |
 | `python manage.py sqlmigrate monitors 0002`     | show the SQL a migration will run                                                                             |
-| `python manage.py seed_checks`                  | insert 500,000 fake checks for 10 `seed-N` monitors over the last 90 days (`--count`, `--monitors` to change) |
+| `python manage.py seed_checks`                  | insert 500,000 fake checks for 10 `seed-N` monitors, assigned to nobody, over the last 90 days, in `acme` (`--org`, `--count`, `--monitors` to change). The organization must exist: `make seed` first |
 
 Change the schema only through migrations, never by hand in `psql`, so every
 database ends up identical.
@@ -428,7 +470,8 @@ keep ten. [ADR 0012](docs/adr/0012-latest-check-without-n-plus-one.md).
 
 | Rule                          | Constraint                                                                               | Violation → API |
 | ----------------------------- | ---------------------------------------------------------------------------------------- | --------------- |
-| Monitor names are unique per owner | `uq_monitor_owner_name` (unique on `(owner_id, name)`)                              | 409             |
+| Monitor names are unique in an organization | `uq_monitor_name` (unique on `name`, in each organization's schema)        | 409             |
+| One organization per slug     | `uq_organization_slug`, `uq_organization_schema_name` (unique)                           | 409             |
 | One account per email         | `uq_user_email` (unique), `ck_user_email_lowercase` (check)                              | 409             |
 | One open incident per monitor and kind | `uq_one_open_incident_per_kind`: partial unique index on `(monitor_id, kind)` `WHERE resolved_at IS NULL` | 409             |
 
@@ -472,11 +515,11 @@ Until D5 Pulse only checked when someone called "check now". Now it checks on it
 own, with Celery:
 
 ```
-beat ──every 10 s──▶ redis ──▶ worker: enqueue_due_checks()
+beat ──every 10 s──▶ redis ──▶ worker: enqueue_due_checks(), in each organization's schema in turn
                                   │  claim: SELECT id FROM monitors WHERE next_check_at <= now()
                                   │         FOR UPDATE SKIP LOCKED, then next_check_at = now() + interval_s
                                   └─▶ redis ──▶ worker: run_check(monitor_id)  (one message per claimed monitor)
-                                                   │  lock:monitor:<id> in redis, skip if another worker holds it
+                                                   │  lock:<schema>:monitor:<id> in redis, skip if another worker holds it
                                                    └─▶ services.check_monitor(): the same code as "check now"
                                                          saves the check, stamps last_checked_at,
                                                          opens / resolves incidents
@@ -592,7 +635,7 @@ and the trade-offs: [ADR 0008](docs/adr/0008-one-check-per-interval.md).
 ```bash
 docker compose up -d --scale worker=3
 curl -X POST localhost:8200/mode -H 'Content-Type: application/json' -d '{"mode": "slow", "slow_seconds": 14}'
-curl -X PATCH localhost:8100/monitors/<id>/ -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"interval_s": 10, "timeout_s": 15}'
+curl -X PATCH localhost:8100/t/my-team/monitors/<id>/ -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"interval_s": 10, "timeout_s": 15}'
 ```
 
 A check now takes 14 s and is due every 10 s. Two queries show the damage. The
@@ -651,7 +694,8 @@ Two mechanisms, each for one problem:
   selects due monitors `FOR UPDATE SKIP LOCKED` and moves `next_check_at` to the
   next slot in the same transaction.
 - **Lock in Redis** so a monitor is checked by one worker at a time. `run_check`
-  starts with `SET lock:monitor:<id> <token> NX EX 90` and skips if the key exists.
+  starts with `SET lock:<schema>:monitor:<id> <token> NX EX 90` and skips if the
+  key exists. Ids repeat across organizations, so the key names the schema.
 
 |                           | Redis lock                                               | Postgres claim                                    |
 | ------------------------- | -------------------------------------------------------- | ------------------------------------------------- |
@@ -667,7 +711,7 @@ slow monitor above is checked every 20 s, one check at a time.
 
 ```bash
 docker compose exec redis redis-cli -n 1 keys 'lock:*'       # held locks
-docker compose exec redis redis-cli -n 1 ttl lock:monitor:<id>
+docker compose exec redis redis-cli -n 1 ttl lock:org_my_team:monitor:<id>
 ```
 
 ### When the lock lies
@@ -707,18 +751,19 @@ again: no rows either, and one check where there had been six.
 
 ## Status page
 
-`GET /status` is public: no login. For each monitor with `is_public` set, whoever
-owns it, it returns `state` (`down` while an incident is open, otherwise `up`),
+`GET /t/<slug>/status` is public: no login. For each of the organization's monitors
+with `is_public` set, whoever it is assigned to, it returns `state` (`down` while an incident is open, otherwise `up`),
 `uptime_percent` and `p95_latency_ms` over the last 90 days, and its three latest
-incidents. It never returns a monitor's URL or owner, and a private monitor is
+incidents. It never returns a monitor's URL or assignee, and a private monitor is
 not on it at all.
 
 ```bash
-curl -s localhost:8100/status | python -m json.tool
+curl -s localhost:8100/t/my-team/status | python -m json.tool
 ```
 
 The page takes at most seven queries whatever the number of monitors, and they
-add up 90 days of checks. So it is cached in Redis under `status:page` for
+add up 90 days of checks. So it is cached in Redis under `status:page`, one per
+organization (the key starts with its schema), for
 `PULSE_STATUS_CACHE_SECONDS` (default 15): a request returns the cached page if
 there is one, otherwise builds it, stores it and returns it. When an incident
 opens or resolves the key is deleted, so the next visitor sees the change at
@@ -726,13 +771,13 @@ once instead of up to 15 s later. Options and trade-offs:
 [ADR 0009](docs/adr/0009-status-page-cache.md).
 
 ```bash
-docker compose exec redis redis-cli -n 1 ttl :1:status:page   # Django prefixes keys with ":1:"
+docker compose exec redis redis-cli -n 1 ttl org_my_team::1:status:page   # the schema, then Django's ":1:"
 ```
 
 ### The live page
 
-http://localhost:8100/status/live is the same page for a browser. It asks
-`/status` every 5 seconds and redraws when something changed, so an incident
+http://localhost:8100/t/my-team/status/live is the same page for a browser. It asks
+`/t/my-team/status` every 5 seconds and redraws when something changed, so an incident
 shows up, and clears, with nobody refreshing.
 
 Most of those requests cost almost nothing. `/status` sends an `ETag`, the page
@@ -740,8 +785,8 @@ sends it back as `If-None-Match`, and while nothing has changed the answer is
 `304 Not Modified` with no body:
 
 ```bash
-ETAG=$(curl -sI localhost:8100/status | tr -d '\r' | awk -F': ' 'tolower($1) == "etag" {print $2}')
-curl -s -o /dev/null -w '%{http_code}\n' -H "If-None-Match: $ETAG" localhost:8100/status
+ETAG=$(curl -sI localhost:8100/t/my-team/status | tr -d '\r' | awk -F': ' 'tolower($1) == "etag" {print $2}')
+curl -s -o /dev/null -w '%{http_code}\n' -H "If-None-Match: $ETAG" localhost:8100/t/my-team/status
 ```
 
 The first line asks for the headers only (`-I`), picks the `ETag` line out of
@@ -754,6 +799,7 @@ tab would hold a worker: [ADR 0025](docs/adr/0025-live-status-page.md).
 
 ### Benchmark
 
+Measured in D9, before organizations, when the page was `/status`.
 10 monitors, 500,000 seeded checks, 60 incidents. gunicorn with 2 workers,
 `DJANGO_DEBUG=false`. 2000 requests from 50 concurrent keep-alive clients, the
 shape of `hey -n 2000 -c 50 http://localhost:8100/status`, sent by a small httpx
@@ -847,13 +893,13 @@ including in the worker. Here the third failed "check now" opens an incident, an
 the alert it queues is delivered by the worker under the same id:
 
 ```bash
-curl -X POST localhost:8100/monitors/8/check/ -H "Authorization: Bearer $TOKEN" \
+curl -X POST localhost:8100/t/my-team/monitors/8/check/ -H "Authorization: Bearer $TOKEN" \
   -H 'X-Request-ID: demo-check-3'
 docker compose logs --no-log-prefix api worker | jq -R -c 'fromjson? | select(.request_id == "demo-check-3")'
 ```
 
 ```json
-{"level": "INFO", "logger": "core.middleware", "message": "request finished", "method": "POST", "path": "/monitors/8/check/", "status": 200, "duration_ms": 86, "request_id": "demo-check-3", "time": "2026-11-13T08:02:47.486868+00:00"}
+{"level": "INFO", "logger": "core.middleware", "message": "request finished", "method": "POST", "path": "/t/my-team/monitors/8/check/", "status": 200, "duration_ms": 86, "request_id": "demo-check-3", "time": "2026-11-13T08:02:47.486868+00:00"}
 {"level": "INFO", "logger": "monitors.tasks", "message": "alert 3 sent: opened", "request_id": "demo-check-3", "task_id": "7dbfae3c-c642-4c6e-a636-5b15427f683f", "task": "monitors.tasks.send_alert", "time": "2026-11-13T08:02:47.497594+00:00"}
 ```
 
@@ -903,7 +949,7 @@ the request id, and not in the response: `/ready` is public.
 (`.env.example`), so a monitor can point at Pulse's own readiness:
 
 ```bash
-curl -X POST localhost:8100/monitors/ -H "Authorization: Bearer $TOKEN" \
+curl -X POST localhost:8100/t/my-team/monitors/ -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name": "pulse-ready", "url": "http://api:8000/ready", "interval_s": 10, "timeout_s": 10}'
 ```
@@ -1075,10 +1121,10 @@ Two monitors show the difference. The deep one asserts on the two components
 that matter and ignores the status code:
 
 ```bash
-curl -X POST localhost:8100/monitors/ -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d @- <<'EOF'
+curl -X POST localhost:8100/t/my-team/monitors/ -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d @- <<'EOF'
 {"name": "shop shallow", "url": "http://shop:8000/health", "timeout_s": 5, "interval_s": 30}
 EOF
-curl -X POST localhost:8100/monitors/ -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d @- <<'EOF'
+curl -X POST localhost:8100/t/my-team/monitors/ -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d @- <<'EOF'
 {"name": "shop deep", "url": "http://shop:8000/ht/", "timeout_s": 5, "interval_s": 30,
  "assertions": {"Database(alias='default')": "OK", "Redis(db=0, host='shop-redis', port=6379)": "OK"}}
 EOF
@@ -1088,8 +1134,8 @@ The Checkpoint 1 demo:
 
 ```bash
 docker compose -f shop/compose.yaml stop shop-redis
-curl -X POST -H "Authorization: Bearer $TOKEN" localhost:8100/monitors/<deep id>/check/      # ok: false, error_type: assertion_failed, status_code: 500
-curl -X POST -H "Authorization: Bearer $TOKEN" localhost:8100/monitors/<shallow id>/check/   # ok: true
+curl -X POST -H "Authorization: Bearer $TOKEN" localhost:8100/t/my-team/monitors/<deep id>/check/      # ok: false, error_type: assertion_failed, status_code: 500
+curl -X POST -H "Authorization: Bearer $TOKEN" localhost:8100/t/my-team/monitors/<shallow id>/check/   # ok: true
 docker compose -f shop/compose.yaml start shop-redis
 ```
 
@@ -1147,13 +1193,14 @@ All settings come from environment variables in `.env` (never committed).
 | `PULSE_FAIL_THRESHOLD` | Failed checks in a row before an incident opens. 1–10, default `3`.   |
 | `PULSE_OK_THRESHOLD`   | Successful checks in a row before it resolves. 1–10, default `2`.     |
 | `PULSE_RAW_CHECK_DAYS` | Days a check is kept as its own row before only its hour's sums remain. 1–365, default `7`. |
+| `PULSE_SIGNUP_LOCK_TIMEOUT_MS` | Milliseconds a signup waits for its turn to create its organization (they are created one at a time) before answering 503. 100–30,000, default `2000`. |
 | `CELERY_BROKER_URL`    | The queue. `redis://redis:6379/0` inside Docker. Required.            |
 | `PULSE_WEBHOOK_URL`    | Where alerts are POSTed. Defaults to `http://catcher:8000/webhook`.   |
 | `PULSE_WEBHOOK_SECRET` | Shared with the catcher; alerts are HMAC-signed with it. Required.    |
 | `PULSE_ALERT_MAX_ATTEMPTS` | Delivery attempts per alert before it is marked failed. 1–10, default `5`. |
 | `PULSE_WEBHOOK_TIMEOUT_S` | Seconds one delivery attempt may take. 1–30, default `5`. |
 | `PULSE_REDIS_URL`      | Redis for the cache and the check locks. Defaults to `redis://redis:6379/1`, a different database from the broker's. |
-| `PULSE_STATUS_CACHE_SECONDS` | Seconds `/status` is served from the cache. 0–300, default `15`; `0` turns the cache off. |
+| `PULSE_STATUS_CACHE_SECONDS` | Seconds a status page is served from the cache. 0–300, default `15`; `0` turns the cache off. |
 | `PULSE_JWT_SECRET`     | Signs access tokens. Required, at least 32 characters, different from `DJANGO_SECRET_KEY`. Changing it logs everyone out. |
 | `PULSE_JWT_TTL_SECONDS` | Seconds a token is valid after `/login`. 60–86400, default `3600`. |
 | `PULSE_ALLOWED_PRIVATE_HOSTS` | Comma-separated hostnames on private addresses that monitors may point at: your own targets, and `api` for Pulse itself (`flaky,shop,api`). Default: none. |
@@ -1175,7 +1222,16 @@ variable's name. `tests/config/` covers them with Hypothesis.
 - **`migrate` fails after pulling D8** (`InconsistentMigrationHistory`, or
   `column "owner_id" ... contains null values`): the user model changed and
   monitors now need an owner, so a database from before D8 cannot be migrated.
-  Reset it with `docker compose down -v`, start the stack and run `migrate` again.
+  Reset it with `docker compose down -v`, start the stack and run `migrate_all`.
+- **After pulling ticket 1 (organizations)**, a database from before cannot be
+  migrated: its monitors are in `public`. Recreate it, which deletes its data:
+  `docker compose down -v`, then `docker compose run --rm api python manage.py migrate_all`
+  (Quick start, step 4). `make up` runs the second command too.
+- **Signup answers 503**: with `Retry-After: 5`, other signups were being created
+  and this one waited longer than `PULSE_SIGNUP_LOCK_TIMEOUT_MS`; try again. With
+  `Retry-After: 30`, the template schema is missing, or behind or ahead of the
+  code that is running (the log says which, under `organization not created`):
+  `make migrate` with the deployed code, or finish the deploy.
 - **A monitor on `http://api:8000/ready` reports `wrong_status` with 400**: `api`
   is missing from `DJANGO_ALLOWED_HOSTS`. `blocked` means it is missing from
   `PULSE_ALLOWED_PRIVATE_HOSTS`.
@@ -1192,7 +1248,7 @@ variable's name. `tests/config/` covers them with Hypothesis.
 - **`password authentication failed for user`**: Postgres only applies `POSTGRES_PASSWORD`
   when its data volume is first created. If you changed the password in `.env` later,
   reset the database with `docker compose down -v` (deletes all data), then
-  `docker compose up -d --wait` and run `migrate` again.
+  `docker compose up -d --wait` and run `migrate_all` again.
 
 ## Releases
 
@@ -1241,7 +1297,7 @@ are still built locally.
 export PULSE_VERSION=v0.1.0
 docker compose -f compose.yaml -f compose.release.yaml pull api worker beat
 docker compose -f compose.yaml -f compose.release.yaml up -d --wait
-docker compose -f compose.yaml -f compose.release.yaml exec api python manage.py migrate
+docker compose -f compose.yaml -f compose.release.yaml exec api python manage.py migrate_all
 docker compose -f compose.yaml -f compose.release.yaml images api   # which version is running
 ```
 
@@ -1322,7 +1378,7 @@ at the first failure:
 | Migrations match the models  | `manage.py makemigrations --check --dry-run`                         |
 | Tests (pytest)               | `pytest -n auto --cov`, with `HYPOTHESIS_PROFILE=ci`                 |
 | Image builds (docker build)  | `docker build .`                                                     |
-| Image works                  | migrate, start the API and a worker from that image, `/ready`, sign up, log in, ping the worker |
+| Image works                  | `migrate_all`, start the API and a worker from that image, `/ready`, sign up with an organization, log in, list its monitors, ping the worker |
 
 Postgres and Redis run as service containers. The steps run on the runner itself,
 where those are on `localhost` and not under their Compose names; the workflow sets
@@ -1349,11 +1405,20 @@ docker compose run --rm catcher pytest -q  # the catcher's own tests (signature 
 ```
 
 Tests live in a root-level `tests/` package, one sub-package per Django app
-(`tests/monitors/`, `tests/core/`, `tests/accounts/`), with the shared fixtures in
-`tests/conftest.py` so every app can use them: `api` (a client logged in as
-`user`, with a token issued directly instead of through `/login`), `anon` (no
-token), `monitor`, `fake_check`, and `dns`, which replaces the resolver for every
-test so none looks a name up for real. Keeping tests out of
+(`tests/monitors/`, `tests/core/`, `tests/accounts/`, `tests/orgs/`), with the
+shared fixtures in `tests/conftest.py` so every app can use them: `api` (a client
+logged in as `user`, with a token issued directly instead of through `/login`),
+`anon` (no token), `monitor`, `fake_check`, and `dns`, which replaces the resolver
+for every test so none looks a name up for real.
+
+Every test database holds the template schema and two organizations, `acme` and
+`globex`, created once. A test that uses the database runs inside `acme`'s schema,
+`user` is its owner, and the clients send any path the public URLs do not know to
+`/t/acme/...`. `with globex:` runs a block in the other one. A test that needs its
+rows committed (a second connection must see them) uses the `committed` fixture
+instead of `transaction=True`, whose cleanup would empty the shared tables. It
+empties acme's tables before and after, and refuses any database whose name does
+not start with `test_`, even when it is the only test selected. Keeping tests out of
 the app packages also keeps them out of the coverage report's `source`.
 
 Locally, tests run inside the `api` container because they need the same

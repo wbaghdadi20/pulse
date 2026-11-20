@@ -1,6 +1,6 @@
 # 13. Email accounts, a signed token per request, and no Django admin
 
-- Status: accepted
+- Status: accepted, amended 2026-11-20 (ticket 1, subtask 1.2)
 - Date: 2026-11-12 (D8)
 
 ## Context
@@ -83,3 +83,12 @@ to log in, and something to send with each request.
   Hiding that needs email verification. Not built, and neither is password reset.
 - Every endpoint added later is closed until someone makes it public on purpose.
   `tests/accounts/test_authentication.py` holds the list of public routes.
+
+## Amended 2026-11-20 (ticket 1, subtask 1.2)
+
+Signup also takes `organization_name` and `slug`, and creates the account, the
+organization with its schema, and the account's owner membership in one
+transaction ([ADR 0026](0026-schema-per-tenant.md)); a taken slug is a 409 like a
+taken email. Inside `/t/<slug>/`, `JWTAuthentication` loads the token's user
+together with their active membership there, still one query, and a valid token
+that is not a member gets 404 (`orgs.permissions.IsMember`).

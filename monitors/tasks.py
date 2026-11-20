@@ -12,6 +12,7 @@ from celery.utils.log import get_task_logger
 from django.conf import settings
 
 from core.system_checks import MAX_ALERT_ATTEMPTS
+from orgs.tenancy import current_schema, in_each_organization
 
 from . import alerting, locks, retention, services
 from .models import MAX_TIMEOUT_S, Alert, Monitor
@@ -28,19 +29,24 @@ CHECK_LOCK_TTL_S = CHECK_TIME_LIMIT_S + 15
 
 @shared_task
 def enqueue_due_checks() -> int:
-    """Queue one run_check per due monitor. Beat calls this."""
+    """Queue one run_check per due monitor, organization by organization. Beat calls this."""
+    queued = sum(in_each_organization("enqueue_due_checks", _enqueue_due_checks))
+    log.info("queued %d checks", queued)
+    return queued
+
+
+def _enqueue_due_checks() -> int:
     due = services.claim_due_monitors()
     for monitor_id, interval_s in due:
         # Not picked up within its interval: the next slot's message replaces it.
         run_check.apply_async(args=(monitor_id,), expires=interval_s)
-    log.info("queued %d checks", len(due))
     return len(due)
 
 
 @shared_task(time_limit=CHECK_TIME_LIMIT_S)
 def run_check(monitor_id: int) -> None:
     """Check one monitor, unless another worker is checking it right now."""
-    key = f"lock:monitor:{monitor_id}"
+    key = lock_key(monitor_id)
     token = locks.acquire(key, CHECK_LOCK_TTL_S)
     if token is None:
         log.info("monitor %d is already being checked, skipping", monitor_id)
@@ -52,6 +58,11 @@ def run_check(monitor_id: int) -> None:
             log.warning(
                 "monitor %d: the lock expired before the check finished", monitor_id
             )
+
+
+def lock_key(monitor_id: int) -> str:
+    """Ids repeat across organizations; the schema keeps their locks apart."""
+    return f"lock:{current_schema()}:monitor:{monitor_id}"
 
 
 def _check(monitor_id: int) -> None:
@@ -70,9 +81,13 @@ def _check(monitor_id: int) -> None:
 def roll_up_checks() -> None:
     """Sum up the hours that are over, then delete the checks kept long enough.
     Beat calls this hourly. Safe to run twice, or twice at once: see retention.py."""
-    rolled = retention.roll_up()
-    checks = retention.prune()
-    hours = retention.forget()
+    done = in_each_organization(
+        "roll_up_checks",
+        lambda: (retention.roll_up(), retention.prune(), retention.forget()),
+    )
+    rolled = sum(counts[0] for counts in done)
+    checks = sum(counts[1] for counts in done)
+    hours = sum(counts[2] for counts in done)
     log.info(
         "rolled up %d monitor hours, deleted %d checks and %d old hours",
         rolled,

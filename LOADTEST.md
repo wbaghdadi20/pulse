@@ -2,6 +2,12 @@
 
 How much load Pulse takes, what limited it, and what one fix changed.
 
+**Before organizations.** Everything below was measured, and `loadtest/seed.py`
+and `loadtest/locustfile.py` are written, for the single-schema Pulse of D9: they
+do not run against the organizations of ticket 1, whose monitors are under
+`/t/<slug>/`. Subtask 1.3 adapts them and measures again (NF-3: at least 90% of
+these requests a second).
+
 **Result.** With 50 concurrent users and 4 gunicorn workers Pulse served about
 475 requests a second with no errors. The slowest endpoint was the uptime
 query: each request made Postgres read about 8,200 pages to aggregate 8,600
@@ -99,6 +105,10 @@ _Finding the bottleneck_ below says how to read it.
 ```bash
 make explain DB=pulse_loadtest MONITOR=123 DAYS=30
 ```
+
+Before organizations only: the load-test data has no organization schema, and
+`make explain` now looks in one (`ORG`). Subtask 1.3 seeds the load test into
+organizations and brings this step back.
 
 **6. Always last: back to development.** This undoes step 1: `api` is the
 development server again, and `worker` and `beat` start.

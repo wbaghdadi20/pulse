@@ -90,9 +90,10 @@ def test_a_token_secret_of_32_characters_is_long_enough(settings):
     [
         ("PULSE_RATE_LIMIT_PER_MINUTE", "pulse.E007", 0, 6001),
         ("PULSE_AUTH_RATE_LIMIT_PER_MINUTE", "pulse.E008", 0, 61),
+        ("PULSE_SIGNUP_LOCK_TIMEOUT_MS", "pulse.E012", 99, 30_001),
     ],
 )
-def test_out_of_range_rate_limits_are_reported(
+def test_out_of_range_rate_limits_and_timeouts_are_reported(
     settings, name, error_id, too_low, too_high
 ):
     for value in (too_low, too_high):

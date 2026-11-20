@@ -42,9 +42,11 @@ def webhook(monkeypatch) -> Receiver:
 
 @pytest.fixture
 def queued(monkeypatch) -> list[int]:
-    """Alert ids send_alert.delay was called with, instead of queueing them."""
+    """Alert ids send_alert was queued with, instead of queueing them."""
     ids: list[int] = []
-    monkeypatch.setattr(tasks.send_alert, "delay", ids.append)
+    monkeypatch.setattr(
+        tasks.send_alert, "apply_async", lambda args, headers: ids.append(args[0])
+    )
     return ids
 
 

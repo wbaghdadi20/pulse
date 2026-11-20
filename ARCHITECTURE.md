@@ -17,15 +17,15 @@ Who uses Pulse and what it talks to.
 
 ```mermaid
 flowchart TB
-    operator["<b>Operator</b><br/>[Person]<br/>Signs up and logs in, then manages<br/>their own monitors"]
+    operator["<b>Organization owner</b><br/>[Person]<br/>Signs up with an organization, logs in,<br/>manages the monitors assigned to them.<br/>One login, a membership in each organization"]
     oncall["<b>On-call engineer</b><br/>[Person]<br/>Reads alerts"]
-    visitor["<b>Visitor</b><br/>[Person]<br/>Reads the public status page"]
-    pulse["<b>Pulse</b><br/>[Software system]<br/>Checks HTTP services on a schedule,<br/>records every result, opens and resolves<br/>incidents, sends signed alerts,<br/>serves a status page"]
+    visitor["<b>Visitor</b><br/>[Person]<br/>Reads an organization's public status page"]
+    pulse["<b>Pulse</b><br/>[Software system]<br/>One Postgres schema per organization.<br/>Checks HTTP services on a schedule,<br/>records every result, opens and resolves<br/>incidents, sends signed alerts,<br/>serves a status page per organization"]
     targets["<b>Monitored services</b><br/>[External systems]<br/>flaky and shop today"]
     receiver["<b>Alert receiver</b><br/>[External system]<br/>catcher, standing in for<br/>Slack or PagerDuty"]
 
-    operator -- "signup, login, then their own monitors<br/>[JSON over HTTP, bearer token]" --> pulse
-    visitor -- "GET /status, no login:<br/>public monitors only [JSON over HTTP]" --> pulse
+    operator -- "/signup, /login, then /t/{slug}/...<br/>[JSON over HTTP, bearer token]" --> pulse
+    visitor -- "GET /t/{slug}/status, no login:<br/>public monitors only [JSON over HTTP]" --> pulse
     pulse -- "checks, public addresses and<br/>allow-listed targets only<br/>[HTTP GET or HEAD]" --> targets
     pulse -- "incident opened or resolved<br/>[signed webhook, HTTP POST]" --> receiver
     oncall -- "reads alerts<br/>[HTTP]" --> receiver
@@ -41,8 +41,10 @@ flowchart TB
 Pulse only reaches services over HTTP. It never sees a target's database or cache:
 it learns about them through the target's own deep health check.
 
-Trust boundaries: an operator is whoever holds a valid token, and sees only their
-own monitors. A monitor's URL is untrusted input that Pulse itself will request,
+Trust boundaries: a person is whoever holds a valid token. Inside `/t/<slug>/`
+they reach an organization only as one of its members, and every query runs in
+that organization's schema, so another organization's rows are not there to be
+read. Inside it, a member sees the monitors assigned to them. A monitor's URL is untrusted input that Pulse itself will request,
 so the host is resolved and judged before every check ([SECURITY.md](SECURITY.md)).
 
 ## Level 2: containers
@@ -52,29 +54,29 @@ three different commands.
 
 ```mermaid
 flowchart TB
-    operator["<b>Operator</b><br/>[Person]"]
+    operator["<b>Organization owner</b><br/>[Person]"]
     visitor["<b>Visitor</b><br/>[Person]"]
 
     subgraph pulse ["Pulse"]
-        api["<b>api</b><br/>[Container: Django + DRF on gunicorn]<br/>REST API: signup, login, monitors,<br/>check now, uptime, incidents, status page"]
+        api["<b>api</b><br/>[Container: Django + DRF on gunicorn, django-tenants]<br/>REST API: signup, login; under /t/{slug}/,<br/>in that organization's schema: monitors,<br/>check now, uptime, incidents, status page"]
         beat["<b>beat</b><br/>[Container: Celery beat]<br/>The clock. Queues enqueue_due_checks<br/>every 10 s and roll_up_checks every hour"]
-        worker["<b>worker</b><br/>[Container: Celery worker]<br/>Runs checks, evaluates incidents,<br/>delivers alerts"]
-        redis[("<b>redis</b><br/>[Container: Redis 7]<br/>db 0: Celery broker, the task queue<br/>db 1: status page cache, check locks,<br/>rate limit counters")]
-        postgres[("<b>postgres</b><br/>[Container: PostgreSQL 16]<br/>users, monitors, checks,<br/>incidents, alerts")]
+        worker["<b>worker</b><br/>[Container: Celery worker, tenant-schemas-celery]<br/>Runs each task in the schema of the<br/>organization that queued it: checks,<br/>incidents, alerts. The tick visits every one"]
+        redis[("<b>redis</b><br/>[Container: Redis 7]<br/>db 0: Celery broker, the task queue<br/>db 1: status page cache and check locks,<br/>keyed by schema; rate limit counters")]
+        postgres[("<b>postgres</b><br/>[Container: PostgreSQL 16]<br/>public: users, organizations, memberships<br/>tenant_template, and one schema per<br/>organization: monitors, checks, incidents, alerts")]
     end
 
     targets["<b>flaky, shop</b><br/>[External systems: FastAPI, Django]<br/>Monitored services"]
     catcher["<b>catcher</b><br/>[External system: FastAPI]<br/>Alert inbox, verifies signatures"]
 
     operator -- "REST calls with a bearer token<br/>[JSON over HTTP, host port 8100]" --> api
-    visitor -- "GET /status<br/>[JSON over HTTP]" --> api
+    visitor -- "GET /t/{slug}/status<br/>[JSON over HTTP]" --> api
     api -- "reads and fills the status page cache,<br/>counts requests per client address<br/>[Redis protocol]" --> redis
-    api -- "reads and writes<br/>[SQL, psycopg]" --> postgres
-    api -- "queues send_alert<br/>[Redis protocol]" --> redis
+    api -- "public, then SET search_path to the<br/>organization's schema [SQL, psycopg]" --> postgres
+    api -- "queues send_alert, the schema<br/>in a header [Redis protocol]" --> redis
     api -- "check now<br/>[HTTP]" --> targets
     beat -- "queues enqueue_due_checks<br/>and roll_up_checks<br/>[Redis protocol]" --> redis
     worker -- "takes tasks, queues run_check and send_alert,<br/>locks a monitor while checking it,<br/>drops the cached page [Redis protocol]" --> redis
-    worker -- "reads and writes<br/>[SQL, psycopg]" --> postgres
+    worker -- "the task's organization's schema<br/>[SQL, psycopg]" --> postgres
     worker -- "scheduled checks<br/>[HTTP]" --> targets
     worker -- "signed alert<br/>[HTTP POST, HMAC-SHA256]" --> catcher
 
@@ -94,14 +96,14 @@ flowchart TB
 | `worker`   | `--scale worker=N`                           | none                          |
 | `beat`     | exactly one, two would queue everything twice | schedule file in `/tmp`       |
 | `redis`    | single instance                              | queued tasks, locks, the cached page and rate limit counters; no named volume, all of it can be lost |
-| `postgres` | single instance                              | the system of record (volume `pgdata`) |
+| `postgres` | single instance                              | the system of record (volume `pgdata`): `public`, the template schema, one schema per organization |
 
 `api` can queue a task as well as `worker`: "check now" runs the same service code,
 and if that check opens an incident, the alert is queued from the request.
 
 `api` holds no session: who is calling is in the token sent with each request, so
 any replica can answer any request. Only `api` checks tokens and counts requests.
-`worker` acts for the system and for every owner.
+`worker` acts for the system and for every organization, each in its own schema.
 
 ### Deployment: every service, and who talks to whom
 
@@ -214,28 +216,31 @@ flowchart TB
 
     subgraph around ["Around every request: Django middleware"]
         reqid["<b>core/middleware.py</b><br/>[Django middleware]<br/>Picks the request id, returns it in<br/>X-Request-ID, logs one line per request"]
+        tenant["<b>orgs/middleware.py</b><br/>[Django middleware]<br/>/t/{slug}/ to the organization's schema<br/>(slug to schema cached per process), its<br/>URLconf; unknown slug 404; anything else public"]
     end
 
     subgraph gate ["Before every view: DRF defaults from settings"]
-        authn["<b>accounts/authentication.py</b><br/>[DRF authentication class]<br/>Bearer token to request.user, or 401"]
+        authn["<b>accounts/authentication.py</b><br/>[DRF authentication class]<br/>Bearer token to request.user and, inside<br/>/t/{slug}/, the caller's membership with its<br/>organization: one query for a member"]
+        perms["<b>Permissions</b><br/>[DRF permissions]<br/>IsAuthenticated (DRF's), or 401; then<br/>orgs/permissions.py IsMember:<br/>not a member of this organization, 404"]
         throttling["<b>core/throttling.py</b><br/>[DRF throttles]<br/>Per client address: 429 with Retry-After"]
     end
 
     subgraph entry ["Entry points: no business rules"]
         coreviews["<b>core/views.py</b><br/>[PublicAPIView]<br/>GET /health, GET /ready"]
         accviews["<b>accounts/views.py, serializers.py</b><br/>[PublicAPIView]<br/>POST /signup, POST /login"]
-        views["<b>monitors/views.py</b><br/>[DRF APIView]<br/>Parse, call a service with the caller<br/>as owner, shape the response"]
+        views["<b>monitors/views.py</b><br/>[DRF APIView]<br/>Parse, call a service with the caller's<br/>membership as assignee, shape the response"]
         serializers["<b>monitors/serializers.py</b><br/>[DRF serializers]<br/>Validate input, shape output"]
-        handler["<b>core/exception_handler.py</b><br/>Domain errors to 401, 404 and 409"]
-        tasks["<b>monitors/tasks.py</b><br/>[Celery tasks]<br/>enqueue_due_checks, run_check, send_alert"]
+        handler["<b>core/exception_handler.py</b><br/>Domain errors to 400, 401, 404, 409 and 503"]
+        tasks["<b>monitors/tasks.py</b><br/>[Celery tasks, run in their schema]<br/>enqueue_due_checks (every organization),<br/>run_check, send_alert"]
     end
 
     subgraph domain ["Domain: no HTTP in, no Celery in"]
-        accservices["<b>accounts/services.py</b><br/>signup, login"]
+        accservices["<b>accounts/services.py</b><br/>signup (account, organization and<br/>owner membership, one transaction), login"]
+        orgservices["<b>orgs/services.py</b><br/>create_organization: slug checked, schema<br/>cloned from the template, constraint names<br/>restored; active_membership, require_active_member"]
         tokens["<b>accounts/tokens.py</b><br/>[PyJWT]<br/>issue and verify a signed token"]
         ratelimit["<b>core/ratelimit.py</b><br/>[Strategy]<br/>fixed_window: count one request"]
         readiness["<b>core/readiness.py</b><br/>SELECT 1 on Postgres, PING on Redis,<br/>each with a timeout"]
-        services["<b>monitors/services.py</b><br/>Business rules: CRUD scoped to an owner,<br/>claim_due_monitors, check_monitor,<br/>evaluate_incidents, uptime, open and resolve"]
+        services["<b>monitors/services.py</b><br/>Business rules: CRUD scoped to the<br/>assignee, claim_due_monitors, check_monitor,<br/>evaluate_incidents, uptime, open and resolve"]
         ssrf["<b>monitors/ssrf.py</b><br/>safe_address: resolve the host, judge<br/>every address, return the one to call"]
         statuspage["<b>monitors/status_page.py</b><br/>Build the public page in at most seven<br/>queries from public monitors, cache it, invalidate it"]
         uptime["<b>monitors/uptime.py</b><br/>The uptime and p95 aggregates"]
@@ -246,7 +251,8 @@ flowchart TB
 
     subgraph infra ["Infrastructure"]
         accmodels["<b>accounts/models.py</b><br/>[Django ORM, argon2]<br/>User: email and password hash"]
-        models["<b>monitors/models.py</b><br/>[Django ORM]<br/>Monitor, Check, Incident, Alert<br/>and their constraints"]
+        orgmodels["<b>orgs/models.py</b><br/>[Django ORM, django-tenants]<br/>Organization, Domain, Membership,<br/>in public"]
+        models["<b>monitors/models.py</b><br/>[Django ORM]<br/>Monitor with its assignee, Check,<br/>Incident, Alert, in each organization's schema"]
         clients["<b>monitors/clients.py</b><br/>[httpx, redis-py]<br/>probe_client, webhook_client,<br/>redis_client"]
         locks["<b>monitors/locks.py</b><br/>[Redis SET NX EX, Lua]<br/>acquire, release if still ours"]
         cache["<b>Django cache framework</b><br/>[Redis backend]"]
@@ -256,18 +262,25 @@ flowchart TB
 
     http --> reqid
     reqid -. "sets the request id" .-> logs
+    reqid --> tenant
+    tenant --> orgmodels
     http --> authn
+    http --> perms
     http --> throttling
     http --> coreviews
     coreviews --> readiness
     authn --> tokens
     authn --> accmodels
+    authn --> orgservices
     throttling --> ratelimit
     ratelimit --> cache
     http --> accviews
     accviews --> accservices
     accservices --> tokens
     accservices --> accmodels
+    accservices --> orgservices
+    orgservices --> orgmodels
+    orgservices -. "raises SlugTaken, InvalidSlug,<br/>NotAnActiveMember, OrganizationsBusy" .-> handler
     accservices -. "raises EmailTaken,<br/>InvalidCredentials" .-> handler
     http --> views
     views --> serializers
@@ -284,6 +297,7 @@ flowchart TB
     services --> incidents
     services --> alerting
     services --> models
+    services -- "assignee" --> orgservices
     services --> db
     services --> uptime
     services -. "invalidate after commit" .-> statuspage
@@ -305,7 +319,10 @@ flowchart TB
 | `incidents.decide` has no I/O                               | it takes a list of booleans and returns an enum      |
 | Rules that two requests could break at once live in Postgres | named constraints; `violated_constraint` reads which one fired |
 | Every endpoint needs a token unless it says otherwise       | `IsAuthenticated` is DRF's default; only a `PublicAPIView` subclass is open, and a test holds the list |
-| A request reaches a monitor only as its owner               | `services.get_monitor(pk, owner)`: the owner is a required argument and part of the query |
+| A request sees one organization's rows, and only as its member | the middleware sets the schema from `/t/<slug>/`; `IsMember` answers 404 to anyone without an active membership there |
+| Inside it, a request reaches a monitor only as its assignee | `services.get_monitor(pk, assignee)`: the caller's membership is a required argument and part of the query |
+| A membership id stored in a tenant row is one of this organization's | no foreign key crosses schemas, so `orgs.services.require_active_member` is called by every service that sets one |
+| A task runs in the schema it was queued from                | `tenant-schemas-celery` puts the schema in each message; without one a task runs in `public`, where tenant tables do not exist, and fails |
 | A check connects only to an address that was judged         | `probe` calls `ssrf.safe_address` and requests the address it returns, never the name |
 | The rate limit algorithm can change without touching views  | throttles are handed a `Limiter` function; `fixed_window` is the only one |
 | Every log line can be tied to the request or task it came from | one handler with `ContextFilter`; the middleware and Celery's signals set what it reads, so no call site passes an id |
@@ -313,14 +330,23 @@ flowchart TB
 
 `core/` holds what any app could use (errors, pagination, the exception handler,
 database helpers, startup checks of settings, the public view base class, rate
-limiting, the logging setup, the request id middleware, `/health` and `/ready`). `accounts/` is users and tokens. `config/` is the project: settings,
-URLs, the Celery app, typed environment readers.
+limiting, the logging setup, the request id middleware, `/health` and `/ready`). `accounts/` is users and tokens. `orgs/` is organizations, their
+schemas and memberships, and the tenant middleware. `config/` is the project:
+settings, the public and the tenant URLs, the Celery app, typed environment readers.
 
 ## Data model
 
+`users`, `organizations`, `organization_domains` and `memberships` are in
+`public`. Every other table is in each organization's schema, and in the template
+schema new organizations are cloned from. A tenant table may point at a shared
+one; a shared one never points into a tenant.
+
 ```mermaid
 erDiagram
-    USER ||--o{ MONITOR : "owns"
+    USER |o--o{ MEMBERSHIP : "has"
+    ORGANIZATION ||--o{ MEMBERSHIP : "has"
+    ORGANIZATION ||--o{ DOMAIN : "is found by"
+    MEMBERSHIP |o--o{ MONITOR : "is assigned, across schemas"
     MONITOR ||--o{ CHECK : "is checked by"
     MONITOR ||--o{ CHECK_HOUR : "is summed up in"
     MONITOR ||--o{ INCIDENT : "has"
@@ -332,10 +358,30 @@ erDiagram
         varchar password_hash "argon2id"
         timestamptz created_at
     }
+    ORGANIZATION {
+        bigint id PK
+        varchar name
+        varchar slug UK "in every URL, never changes"
+        varchar schema_name UK "org_ and the slug"
+        timestamptz created_at
+    }
+    DOMAIN {
+        bigint id PK
+        varchar domain UK "the slug, for django-tenants"
+        bigint tenant_id FK
+        boolean is_primary
+    }
+    MEMBERSHIP {
+        bigint id PK
+        bigint user_id FK "nullable, SET NULL"
+        bigint organization_id FK
+        varchar role "owner"
+        timestamptz created_at
+    }
     MONITOR {
         bigint id PK
-        bigint owner_id FK
-        varchar name "unique per owner"
+        bigint assignee_id "a memberships id, no constraint, nullable"
+        varchar name "unique in the organization"
         varchar url
         boolean is_public "default false"
         varchar method "GET or HEAD"
@@ -388,7 +434,10 @@ erDiagram
 | ----------- | ---------------------------------------------------------------------------- | ---------------------------------------------- |
 | `users`     | `uq_user_email` unique `(email)`                                             | signing up twice is a 409, decided by Postgres |
 | `users`     | `ck_user_email_lowercase` check `email = lower(email)`                       | one account per address whatever its case      |
-| `monitors`  | `uq_monitor_owner_name` unique `(owner_id, name)`                            | duplicate name is a 409 for that owner only; also the index behind "my monitors" |
+| `organizations` | `uq_organization_slug` unique `(slug)`, `uq_organization_schema_name` unique `(schema_name)` | one organization per URL and per schema; a taken slug is a 409 |
+| `memberships` | `uq_membership_user_organization` unique `(user_id, organization_id)`      | one role per person per organization; also the index behind "this user's membership here" |
+| `monitors`  | `uq_monitor_name` unique `(name)`, in each organization's schema             | a duplicate name is a 409 in that organization, whoever has the other one |
+| `monitors`  | index on `(assignee_id)`, and no foreign key: it would cross schemas         | "the monitors assigned to me"; `require_active_member` stands in for the constraint |
 | `monitors`  | index on `(next_check_at)`                                                   | "which monitors are due" every 10 s            |
 | `checks`    | `checks_monitor_checked_cover` on `(monitor_id, checked_at)`, carrying `ok` and `latency_ms` | the uptime query (answered from the index alone), "last N checks", the status page |
 | `check_hours` | `uq_check_hour_monitor_hour` unique `(monitor_id, hour)`                   | summing an hour up twice replaces its row; also the index behind a monitor's hours |
@@ -396,8 +445,10 @@ erDiagram
 | `incidents` | `uq_one_open_incident_per_kind` unique `(monitor_id, kind)` where `resolved_at IS NULL` | at most one open incident per monitor and kind |
 | `alerts`    | `uq_alert_incident_kind` unique `(incident_id, kind)`                        | one alert per incident event, however often it is queued |
 
-Deleting a user cascades to their monitors. Deleting a monitor cascades to its
-checks, hourly sums, incidents and alerts. A check is kept for a week and its
+Nothing in `public` reaches into a tenant schema: deleting a user would keep their
+memberships, with `user_id` set to null, and their monitors, still assigned to
+those memberships. So accounts are not deleted (Known limits). Deleting a monitor cascades to its checks, hourly sums, incidents
+and alerts. A check is kept for a week and its
 hour's sums for 91 days, so `checks` and `check_hours` depend on the number of
 monitors and not on how long Pulse has run ([ADR 0024](docs/adr/0024-check-retention.md)).
 
@@ -408,6 +459,7 @@ monitors and not on how long Pulse has run ([ADR 0024](docs/adr/0024-check-reten
 ```mermaid
 sequenceDiagram
     actor Operator
+    participant M as orgs.TenantMiddleware
     participant T as throttles
     participant L as accounts.LoginView
     participant S as accounts.services
@@ -434,21 +486,27 @@ sequenceDiagram
         end
     end
 
-    Operator->>A: GET /monitors/, Authorization: Bearer token
+    Operator->>M: GET /t/acme/monitors/, Authorization: Bearer token
+    alt acme not yet known to this process
+        M->>DB: SELECT the schema of domain acme, in public
+        Note over M: unknown slug: 404. Known ones are kept, slug to schema only: it never changes
+    end
+    M->>A: the connection is in org_acme
     A->>J: verify: signature, algorithm, exp, sub
-    A->>DB: SELECT user
-    Note over A: bad or expired token, or no such user: 401 with WWW-Authenticate
-    A->>T: request.user is set
+    A->>DB: SET search_path org_acme, public, then SELECT membership JOIN user JOIN organization WHERE user = sub AND schema_name = org_acme
+    Note over A: bad or expired token, or no such user: 401 with WWW-Authenticate. A user who is not a member: 404 (IsMember)
+    A->>T: request.user, request.auth the membership, request.tenant its organization (for later code)
     T->>C: add rl:api:address:minute, INCR
     T->>V: get
-    V->>DB: monitors WHERE owner_id = request.user
-    V-->>Operator: 200, their monitors only
+    V->>DB: monitors WHERE assignee_id = the membership, in org_acme only
+    V-->>Operator: 200, the monitors assigned to them
 ```
 
 DRF runs authentication, then permissions, then throttles, then the view. `/login`
-has no authentication step, so its throttle is the first thing that runs.
+has no authentication step, so its throttle is the first thing that runs. A
+request makes one statement more than before tenants, the `SET search_path`.
 
-### Check now: `POST /monitors/<id>/check/`
+### Check now: `POST /t/<slug>/monitors/<id>/check/`
 
 ```mermaid
 sequenceDiagram
@@ -460,10 +518,10 @@ sequenceDiagram
     participant DB as Postgres
     participant R as Redis
 
-    Operator->>V: POST /monitors/5/check/ with a token
-    V->>S: get_monitor(5, owner = the caller)
-    S->>DB: SELECT monitor WHERE id = 5 AND owner_id = caller
-    Note over V,S: no such id, or someone else's: MonitorNotFound, mapped to 404
+    Operator->>V: POST /t/acme/monitors/5/check/ with a token
+    V->>S: get_monitor(5, assignee = the caller's membership)
+    S->>DB: SELECT monitor WHERE id = 5 AND assignee_id = membership, in org_acme
+    Note over V,S: no such id, or assigned to someone else: MonitorNotFound, mapped to 404
     V->>S: check_monitor(monitor)
     S->>P: probe(monitor)
     P->>P: ssrf.safe_address: resolve the host once, judge every address
@@ -505,17 +563,20 @@ sequenceDiagram
     loop every 10 s
         B->>R0: enqueue_due_checks
     end
-    R0->>W: enqueue_due_checks
-    W->>DB: BEGIN
-    W->>DB: SELECT id, interval_s WHERE next_check_at has passed FOR UPDATE SKIP LOCKED
-    W->>DB: UPDATE next_check_at = now + interval_s for those rows
-    W->>DB: COMMIT
-    Note over W,DB: claimed. No other caller gets these monitors before their next slot
-    loop each claimed monitor
-        W->>R0: run_check(monitor_id), expires after interval_s
+    R0->>W: enqueue_due_checks, in public
+    W->>DB: SELECT the organizations
+    loop each organization
+        W->>DB: SET search_path to its schema, BEGIN
+        W->>DB: SELECT id, interval_s WHERE next_check_at has passed FOR UPDATE SKIP LOCKED
+        W->>DB: UPDATE next_check_at = now + interval_s for those rows
+        W->>DB: COMMIT
+        Note over W,DB: claimed. No other caller gets these monitors before their next slot
+        loop each claimed monitor
+            W->>R0: run_check(monitor_id), the schema in a header, expires after interval_s
+        end
     end
-    R0->>W: run_check(monitor_id)
-    W->>R1: SET lock:monitor:id token NX EX 90
+    R0->>W: run_check(monitor_id), in the header's schema
+    W->>R1: SET lock:schema:monitor:id token NX EX 90
     alt key already there
         Note over W: another worker is checking this monitor, skip
     else lock taken
@@ -529,6 +590,7 @@ sequenceDiagram
 ```
 
 From `services.check_monitor` onward this is the same code path as "check now".
+Ids repeat across organizations, so the lock key carries the schema.
 Task arguments are ids, never objects: they cross Redis as JSON and the row is
 loaded fresh when the task runs. Celery kills a `run_check` after 75 s, so a lock
 (90 s) cannot expire under a check that is still running.
@@ -571,9 +633,12 @@ sequenceDiagram
 ```
 
 Delivery is at-least-once. Every attempt carries the same `alert_id` in the signed
-body, and the catcher stores each id once.
+body, and the catcher stores each id once. `send_alert`'s message carries the
+schema the alert was written in, taken when the callback is registered, and runs
+there. Alert ids repeat across organizations, and until subtask 1.4 the catcher
+still deduplicates by `alert_id` alone (Known limits).
 
-### Status page: `GET /status`
+### Status page: `GET /t/<slug>/status`
 
 ```mermaid
 sequenceDiagram
@@ -584,9 +649,9 @@ sequenceDiagram
     participant DB as Postgres
     participant S as services
 
-    Visitor->>V: GET /status
+    Visitor->>V: GET /t/acme/status, in org_acme
     V->>P: get_status_page()
-    P->>C: GET status:page
+    P->>C: GET org_acme::1:status:page
     alt hit
         C-->>P: the page
     else miss
@@ -594,19 +659,20 @@ sequenceDiagram
         P->>DB: uptime and p95 per public monitor over 90 days
         P->>DB: their open incidents
         P->>DB: their latest 3 incidents each
-        P->>C: SET status:page, expires in 15 s
+        P->>C: SET org_acme::1:status:page, expires in 15 s
     end
     P-->>V: page
     V-->>Visitor: 200
 
     Note over S,C: meanwhile, an incident opens or resolves,<br/>or a public monitor is created, changed, made private or deleted
     S->>DB: BEGIN, write, COMMIT
-    S->>C: after commit, DEL status:page
+    S->>C: after commit, DEL org_acme::1:status:page
     Note over Visitor,C: the next request is a miss and shows the change
 ```
 
-The page is the one place monitors of every owner are read together, and only
-those with `is_public` set.
+The page is the one place the monitors of every member of an organization are
+read together, and only those with `is_public` set. The cache key starts with the
+schema, so each organization has its own page and its own invalidation.
 
 ## State machines
 
@@ -639,8 +705,30 @@ stateDiagram-v2
 
 ## Decisions
 
-The five that shape Pulse most, in short. Each links to its full record, and the
+The six that shape Pulse most, in short. Each links to its full record, and the
 table after them lists every record.
+
+### One Postgres schema per organization
+
+- **Context.** Each customer is an organization, and one forgotten
+  `WHERE organization_id = ...` in shared tables would show one customer
+  another's monitors.
+- **Decision.** django-tenants: users, organizations and memberships in `public`,
+  everything about monitors in one schema per organization, entered from
+  `/t/<slug>/` by setting `search_path`. A new organization's schema is cloned
+  from a template inside the signup transaction. A monitor's assignee is a
+  membership id with no foreign key across schemas; a service checks it instead.
+- **Alternatives considered.** Shared tables with a filter in every query: the
+  simplest, and one missing filter is a leak. A database per organization:
+  stronger, with connections and backups per organization. Migrating each new
+  schema instead of cloning: as fast today, but it cannot run in a transaction.
+- **Consequences.** Better: a query cannot read another organization's rows; an
+  organization is one schema to export or drop; a task without its organization
+  fails instead of reading the wrong one. Worse: one `SET search_path` more per
+  request; migrations run once per schema, the template first; every task must
+  carry its schema; the assignee is kept valid by code, not by Postgres; signups
+  serialize on the clone function.
+- Full record: [0026](docs/adr/0026-schema-per-tenant.md).
 
 ### Scheduling: Celery workers and one beat tick
 
@@ -723,7 +811,7 @@ table after them lists every record.
   much, and costly to run on a body the target controls. JSONPath or JMESPath:
   a dependency and a language to validate, for bodies that are flat. Ask the
   service for a narrower endpoint: not ours to change.
-- **Consequences.** Better: the monitor's owner decides which dependencies mean
+- **Consequences.** Better: whoever sets up the monitor decides which dependencies mean
   "down", and stopping `shop-redis` fails the deep monitor while the shallow one
   stays green. Worse: the monitor is tied to the target's key names and breaks
   if they change (as a failed check, never a silent pass); a check says that an
@@ -771,7 +859,7 @@ table after them lists every record.
 | [0011](docs/adr/0011-keyset-pagination.md) | Keyset pagination next to limit/offset |
 | [0012](docs/adr/0012-latest-check-without-n-plus-one.md) | A monitor's latest check comes from the same query as the monitor |
 | [0013](docs/adr/0013-authentication.md) | Email accounts, a signed token per request, and no Django admin |
-| [0014](docs/adr/0014-ownership.md) | A monitor is looked up together with its owner |
+| [0014](docs/adr/0014-ownership.md) | A monitor is looked up together with its owner; amended: with the caller's membership, inside its organization |
 | [0015](docs/adr/0015-ssrf-guard.md) | Checks resolve the host themselves and connect only to an address they judged |
 | [0016](docs/adr/0016-rate-limiting.md) | A fixed-window rate limit, counted in Redis, applied by DRF throttles |
 | [0017](docs/adr/0017-json-logs-and-request-ids.md) | JSON logs on stdout, and one id that follows a request into the worker |
@@ -783,6 +871,7 @@ table after them lists every record.
 | [0023](docs/adr/0023-json-assertions.md) | A deep health check is judged by the keys asked for, not by its status code |
 | [0024](docs/adr/0024-check-retention.md) | Raw checks are kept a week; older ones survive as hourly sums with latency buckets |
 | [0025](docs/adr/0025-live-status-page.md) | The status page updates by polling, and `/status` answers 304 when nothing changed |
+| [0026](docs/adr/0026-schema-per-tenant.md) | One Postgres schema per organization, with django-tenants |
 
 ## Known limits
 
@@ -805,3 +894,12 @@ table after them lists every record.
 | Pulse cannot alert about its own Postgres | with it down nothing is queued or recorded, so a monitor on its own `/ready` stays silent. Redis carries the queue, so the same is expected there; only Postgres was measured | not scheduled: an outside watcher or a heartbeat, ADR 0018 |
 | A release is rebuilt from the tag, not promoted from the CI build | the published image could differ from the one that was tested | not scheduled: ADR 0020 |
 | The image is built for linux/amd64 only | on an arm64 machine it runs emulated or not at all | not scheduled: a second platform in the release build |
+| Organizations are created one at a time | every clone holds Pulse's clone lock (the clone itself rewrites shared objects in `public`): six or seven signups a second at most, and one that waits more than `PULSE_SIGNUP_LOCK_TIMEOUT_MS` (2 s) answers 503. 25 at once: 17 created, 8 answered 503 | not scheduled: ADR 0026 |
+| Anyone can sign up, and each signup creates a schema that stays | only 5 signups a minute per address bound it; every organization adds to the catalog, to `migrate_all`, and about 1.2 ms to beat's tick (1 s budget: about 850 idle organizations) | ticket 5 (P2-5): limits |
+| A well-formed unknown slug is looked up on every request, before the rate limit | one query per such request | subtask 1.3 |
+| The catcher deduplicates by `alert_id` alone | alert ids repeat across organizations, so Globex's alert 1 is dropped as a repeat of Acme's | subtask 1.4: by organization and `alert_id` |
+| Log lines carry the request id, not the organization | a line cannot be tied to its organization without the request | subtask 1.4 |
+| Beat's tick visits every organization in turn | about 1.2 ms per idle organization: the 10 s tick's 1 s budget is reached near 850 | not scheduled: one claim task per organization, ADR 0026 |
+| The assignee has no database constraint | a membership id is only as valid as the services that write it | accepted: `require_active_member` and its tests, ADR 0026; ticket 3 adds the lifecycle check |
+| An unknown slug is Django's HTML 404 | no JSON body for `/t/<unknown>/...` | subtask 1.3 |
+| Accounts cannot be deleted or deactivated yet | deleting one in `public` would leave its monitors assigned to a membership with no account | ticket 3: deletion, moving a leaver's monitors first |

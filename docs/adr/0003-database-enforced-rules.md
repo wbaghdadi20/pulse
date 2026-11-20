@@ -1,6 +1,6 @@
 # 3. Rules that can race are enforced by Postgres constraints
 
-- Status: accepted
+- Status: accepted, amended 2026-11-20 (ticket 1, subtask 1.2)
 - Date: 2026-11-04 (D3), recorded 2026-11-10
 
 ## Context
@@ -43,3 +43,16 @@ constraints.
 - Single-row rules are not protected against writers that skip the serializer
   (the shell, a data migration). `Check.objects.create(**result)` relies on
   `probe` producing valid values.
+
+## Amended 2026-11-20 (ticket 1, subtask 1.2)
+
+Monitor names are unique per organization: `uq_monitor_name` on `name` in each
+organization's schema replaces `uq_monitor_owner_name` (ROLE-3,
+[ADR 0026](0026-schema-per-tenant.md)). Two more named constraints decide races
+the same way: `uq_organization_slug` (a slug taken at signup is a 409) and
+`uq_membership_user_organization`. A new organization's schema is cloned, and the
+clone renames UNIQUE constraints, so `orgs.services.restore_constraint_names`
+gives them back the names this ADR relies on.
+`organization_domains.domain` is unique too, under a name Postgres chose: the field
+is django-tenants', and its row is written once at signup, right after the
+organization's, so `uq_organization_slug` has already decided.

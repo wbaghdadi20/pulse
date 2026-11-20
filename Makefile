@@ -20,6 +20,10 @@ RATE     ?= 5
 DURATION ?= 2m
 MONITOR  ?= 1
 DAYS     ?= 30
+# The organization `status`, `explain` and the demo targets look at. Its schema is
+# org_ and the slug with "_" for "-".
+ORG      ?= acme
+SCHEMA   := org_$(subst -,_,$(ORG))
 
 # migrate and the seed run in whichever api container is up. If that is the
 # development one they would land in the development database, so the load-test
@@ -29,8 +33,14 @@ define require_loadtest_api
 	|| { echo "api is not running as it is load-tested. First: make loadtest-up"; exit 1; }
 endef
 
+# The load test's seed and users predate organizations; subtask 1.3 adapts them
+# and removes this.
+define until_organizations
+@echo "The load test does not know organizations yet: subtask 1.3 adapts it (LOADTEST.md)"; exit 1
+endef
+
 .DEFAULT_GOAL := help
-.PHONY: help up down migrate test logs psql explain status rollup \
+.PHONY: help up down migrate seed test logs psql explain status rollup \
 	demo-ready demo-watch demo-break demo-fix demo-alerts \
 	loadtest-up loadtest-seed loadtest loadtest-down
 
@@ -40,7 +50,7 @@ help: ## List the targets
 up: ## Start Pulse and shop for development (also the way back from a load test)
 	@test -f .env || { echo "No .env yet: README, Quick start, steps 2 and 3"; exit 1; }
 	docker network inspect pulse-targets > /dev/null 2>&1 || docker network create pulse-targets
-	$(DEV) run --rm api python manage.py migrate
+	$(DEV) run --rm api python manage.py migrate_all
 	$(DEV) up -d --build --wait
 	$(SHOP) up -d --build --wait
 
@@ -48,8 +58,11 @@ down: ## Stop Pulse and shop (database data is kept)
 	$(SHOP) down
 	$(DEV) down
 
-migrate: ## Apply database migrations
-	$(DEV) exec api python manage.py migrate
+migrate: ## Apply migrations to public, the template schema and every organization
+	$(DEV) exec api python manage.py migrate_all
+
+seed: ## Create the demo organizations acme and globex, and shop's monitors in acme
+	$(DEV) exec api python manage.py seed_demo
 
 test: ## Run the tests. One file: make test ARGS=tests/monitors/test_retention.py
 	$(DEV) exec api pytest -q -n auto $(ARGS)
@@ -60,11 +73,11 @@ logs: ## Follow one service's log: make logs SERVICE=worker
 psql: ## Open psql on Pulse's database, or another: make psql DB=pulse_loadtest
 	$(DEV) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$(if $(DB),$(DB),$$POSTGRES_DB)"'
 
-explain: ## How Postgres runs the uptime query: make explain DB=pulse_loadtest MONITOR=123 DAYS=30
-	$(DEV) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$(if $(DB),$(DB),$$POSTGRES_DB)" -c "EXPLAIN (ANALYZE, BUFFERS) SELECT count(*), count(ok) FILTER (WHERE NOT ok), percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) FROM checks WHERE monitor_id = $(MONITOR) AND checked_at > now() - make_interval(days => $(DAYS))"'
+explain: ## How Postgres runs the uptime query in an organization: make explain ORG=acme MONITOR=1 DAYS=30
+	$(DEV) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$(if $(DB),$(DB),$$POSTGRES_DB)" -c "SET search_path TO $(SCHEMA)" -c "EXPLAIN (ANALYZE, BUFFERS) SELECT count(*), count(ok) FILTER (WHERE NOT ok), percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) FROM checks WHERE monitor_id = $(MONITOR) AND checked_at > now() - make_interval(days => $(DAYS))"'
 
-status: ## Print the state of each monitor on the status page
-	@curl -s localhost:8100/status | python3 -c 'import json, sys; [print(m["state"], m["name"], sep="\t") for m in json.load(sys.stdin)["monitors"]]'
+status: ## Print the state of each monitor on an organization's status page: make status ORG=acme
+	@curl -s localhost:8100/t/$(ORG)/status | python3 -c 'import json, sys; [print(m["state"], m["name"], sep="\t") for m in json.load(sys.stdin)["monitors"]]'
 
 rollup: ## Run the hourly roll-up of checks now
 	$(DEV) exec worker celery -A config call monitors.tasks.roll_up_checks
@@ -80,8 +93,8 @@ demo-ready: ## Before the demo: is everything it needs running? Each line says o
 		&& echo "ok    shop, shop-db and shop-redis are running" || echo "FAIL  part of shop is stopped.        Run: make demo-fix, or make up"
 	@curl -fs -o /dev/null localhost:8400/ \
 		&& echo "ok    catcher answers" || echo "FAIL  catcher does not answer.      Run: make up"
-	@curl -s localhost:8100/status | python3 -c 'import json, sys; m = json.load(sys.stdin)["monitors"]; d = [x["name"] for x in m if x["state"] == "down"]; print("ok    %d monitors, all up" % len(m) if m and not d else "FAIL  down: %s. Run: make demo-fix, wait 30 s, make demo-ready" % (", ".join(d) or "no public monitor at all"))' 2>/dev/null \
-		|| echo "FAIL  no status page.               Run: make up"
+	@curl -s localhost:8100/t/$(ORG)/status | python3 -c 'import json, sys; m = json.load(sys.stdin)["monitors"]; d = [x["name"] for x in m if x["state"] == "down"]; print("ok    %d monitors, all up" % len(m) if m and not d else "FAIL  down: %s. Run: make demo-fix, wait 30 s, make demo-ready" % (", ".join(d) or "no public monitor at all"))' 2>/dev/null \
+		|| echo "FAIL  no status page for $(ORG).      Run: make up, then make seed"
 
 demo-watch: ## Follow the worker: failed checks and alerts sent, as they happen (Ctrl+C stops)
 	$(DEV) logs -f --since 1m worker | grep --line-buffered -oE '"message": "(monitor [0-9]+ ok=False[^"]*|alert [0-9]+ sent[^"]*)"'
@@ -100,9 +113,10 @@ loadtest-up: ## Run api as it is load-tested: make loadtest-up WORKERS=8. Undo: 
 	WEB_CONCURRENCY=$(WORKERS) $(LOADTEST) up -d --build --wait api
 
 loadtest-seed: ## Create the load-test database, its tables and its data (needed once)
+	$(until_organizations)
 	$(require_loadtest_api)
 	$(DEV) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -lqt | cut -d "|" -f 1 | grep -qw pulse_loadtest || createdb -U "$$POSTGRES_USER" pulse_loadtest'
-	$(LOADTEST) exec api python manage.py migrate
+	$(LOADTEST) exec api python manage.py migrate_all
 	$(LOADTEST) exec -T api python manage.py shell < loadtest/seed.py
 
 # A file target: Locust is installed the first time, and again when its pins change.
@@ -111,6 +125,7 @@ $(LOCUST): loadtest/requirements.txt
 	loadtest/.venv/bin/pip install --quiet -r loadtest/requirements.txt
 
 loadtest: $(LOCUST) ## Run the load test: make loadtest USERS=50 RATE=5 DURATION=2m
+	$(until_organizations)
 	$(require_loadtest_api)
 	$(LOCUST) -f loadtest/locustfile.py --headless -u $(USERS) -r $(RATE) -t $(DURATION) --host http://localhost:8100
 

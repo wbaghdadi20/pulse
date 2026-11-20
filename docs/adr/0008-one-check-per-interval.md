@@ -1,6 +1,6 @@
 # 8. One check per interval: claim in Postgres, lock in Redis
 
-- Status: accepted. Supersedes the due-detection part of [0005](0005-scheduling.md)
+- Status: accepted. Supersedes the due-detection part of [0005](0005-scheduling.md); amended 2026-11-20 (ticket 1, subtask 1.2)
 - Date: 2026-11-11 (D7)
 
 ## Context
@@ -122,3 +122,9 @@ Two independent faults, two fixes:
 - The lock is hand-written, about twenty lines, because the mechanism is the
   point of the exercise. `redis.lock.Lock` in redis-py is the same script plus
   blocking and extension, and is what to reach for otherwise.
+
+## Amended 2026-11-20 (ticket 1, subtask 1.2)
+
+Monitor ids repeat across organizations ([ADR 0026](0026-schema-per-tenant.md)),
+so the lock is `lock:<schema>:monitor:<id>`: acme's monitor 5 and globex's are two
+locks. The claim runs per organization, inside its schema.

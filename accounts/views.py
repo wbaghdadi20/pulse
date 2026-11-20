@@ -8,7 +8,7 @@ from core.views import PublicAPIView
 
 from . import services
 from .authentication import KEYWORD
-from .serializers import CredentialsSerializer, SignupSerializer, UserSerializer
+from .serializers import CredentialsSerializer, SignedUpSerializer, SignupSerializer
 
 
 class SignupView(PublicAPIView):
@@ -17,8 +17,10 @@ class SignupView(PublicAPIView):
     def post(self, request: Request) -> Response:
         serializer = SignupSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        user = services.signup(**serializer.validated_data)
-        return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
+        membership = services.signup(**serializer.validated_data)
+        return Response(
+            SignedUpSerializer(membership).data, status=status.HTTP_201_CREATED
+        )
 
 
 class LoginView(PublicAPIView):

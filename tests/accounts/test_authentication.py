@@ -1,15 +1,17 @@
-"""Every endpoint needs a valid token unless it is on the public list below."""
+"""Every endpoint needs a valid token unless it is on the public list below. Tenant
+routes are called in acme, under /t/acme/."""
 
 from datetime import timedelta
 
 import pytest
+from django.conf import settings
 from django.urls import URLPattern, URLResolver, get_resolver, reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from accounts import tokens
 from accounts.models import User
-from tests.conftest import client_for
+from tests.conftest import TenantClient, client_for
 
 pytestmark = pytest.mark.django_db
 
@@ -17,20 +19,29 @@ PUBLIC = {"health", "ready", "status-page", "status-live", "signup", "login"}
 METHODS = ["get", "post", "put", "patch", "delete"]
 
 
-def routes(patterns=None) -> dict[str, str]:
-    """{route name: a concrete path} for every route in the project."""
+def routes() -> dict[str, str]:
+    """{route name: a concrete path} for every route in the project: the public
+    URLconf's as they are, the tenant URLconf's in acme."""
+    public = _routes(settings.PUBLIC_SCHEMA_URLCONF)
+    tenant = {
+        name: f"/t/acme{path}" for name, path in _routes(settings.ROOT_URLCONF).items()
+    }
+    return public | tenant
+
+
+def _routes(urlconf: str, patterns=None) -> dict[str, str]:
     found: dict[str, str] = {}
-    for entry in patterns or get_resolver().url_patterns:
+    for entry in patterns or get_resolver(urlconf).url_patterns:
         if isinstance(entry, URLResolver):
-            found |= routes(entry.url_patterns)
+            found |= _routes(urlconf, entry.url_patterns)
         elif isinstance(entry, URLPattern) and entry.name:
             kwargs = dict.fromkeys(entry.pattern.converters, 1)
-            found[entry.name] = reverse(entry.name, kwargs=kwargs)
+            found[entry.name] = reverse(entry.name, urlconf=urlconf, kwargs=kwargs)
     return found
 
 
 def with_header(value: str) -> APIClient:
-    client = APIClient()
+    client = TenantClient()
     client.credentials(HTTP_AUTHORIZATION=value)
     return client
 

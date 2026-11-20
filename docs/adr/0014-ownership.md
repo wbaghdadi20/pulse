@@ -1,6 +1,6 @@
 # 14. A monitor is looked up together with its owner
 
-- Status: accepted
+- Status: accepted, amended 2026-11-20 (ticket 1, subtask 1.2)
 - Date: 2026-11-12 (D8)
 
 ## Context
@@ -51,3 +51,29 @@ needs an owner, and every path to a monitor has to respect it.
   before the change, for at most one cache lifetime (the race ADR 0009 describes).
 - Monitors that existed before accounts have no owner to be given. Migration
   `0009` needs an empty `monitors` table.
+
+## Amended 2026-11-20 (ticket 1, subtask 1.2)
+
+A monitor belongs to an organization, and inside it is assigned to a membership
+([ADR 0026](0026-schema-per-tenant.md)):
+
+- The organization is the schema the monitor is in. A monitor of another
+  organization is out of reach of every query, whatever the code filters.
+- `Monitor.owner` became `Monitor.assignee`: a membership id with no database
+  constraint (no foreign key crosses schemas), possibly empty. It is set from the
+  caller's membership, never from the body.
+  `orgs.services.require_active_member` refuses a membership that is missing,
+  inactive or of another organization, and every service that sets an assignee
+  calls it.
+- `services.get_monitor(pk, assignee)` and `services.list_monitors(assignee)`
+  filter by the caller's membership, until ticket 3's roles widen it. A monitor
+  assigned to someone else answers 404, as before.
+- Names are unique per organization (`uq_monitor_name`, ROLE-3), not per owner. A
+  409 tells a member that a colleague uses that name, inside one organization
+  only.
+- The status page is per organization: its public monitors, whoever they are
+  assigned to.
+- Deleting an account no longer deletes its monitors. Accounts cannot be deleted
+  or deactivated yet: deleting one in `public` would leave its monitors assigned
+  to a membership with no account. Ticket 3 brings both, deletion moving a
+  leaver's monitors first.

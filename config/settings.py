@@ -37,26 +37,53 @@ ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", default=[])
 
 # No admin, sessions or messages: Pulse is an API, and every caller proves who
 # they are with a token. Why, and how to bring the admin back: docs/adr/0013.
-INSTALLED_APPS = [
+# One Postgres schema per organization (docs/adr/0026): shared apps have their
+# tables once, in public; tenant apps have theirs in every organization's schema.
+SHARED_APPS = [
+    "django_tenants",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.staticfiles",
     "rest_framework",
     "core",
     "accounts",
-    "monitors",
+    "orgs",
 ]
+TENANT_APPS = ["monitors"]
+INSTALLED_APPS = SHARED_APPS + [app for app in TENANT_APPS if app not in SHARED_APPS]
+
+TENANT_MODEL = "orgs.Organization"
+TENANT_DOMAIN_MODEL = "orgs.Domain"
+# Tenant URLs are under /t/<slug>/.
+TENANT_SUBFOLDER_PREFIX = "t"
+# A new organization's schema is a copy of this one, not migrated one by one.
+TENANT_BASE_SCHEMA = "tenant_template"
+TENANT_CREATION_FAKES_MIGRATIONS = True
+# A new organization never takes over a schema that is already there.
+TENANT_REJECT_EXISTING_SCHEMA = True
+# SET search_path once per change of schema, not before every query.
+TENANT_LIMIT_SET_CALLS = True
+# Tenants are migrated oldest first, so a failure always stops at the same one.
+TENANT_MIGRATION_ORDER = ["id"]
+# How long creating an organization waits for its turn before answering 503.
+# Organizations are created one at a time, and a waiting signup holds a worker.
+PULSE_SIGNUP_LOCK_TIMEOUT_MS = env_int("PULSE_SIGNUP_LOCK_TIMEOUT_MS", default=2000)
 
 MIDDLEWARE = [
     # First, so that what the others answer and log carries the id too.
     "core.middleware.RequestIDMiddleware",
+    # Before the tenant middleware, so its 404 for an unknown slug has their headers.
     "django.middleware.security.SecurityMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # Before anything that may query: it sets the schema.
+    "orgs.middleware.TenantMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
-    "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
+# The tenant URLs, served under /t/<slug>/. Everything else is in the public ones.
 ROOT_URLCONF = "config.urls"
+PUBLIC_SCHEMA_URLCONF = "config.urls_public"
 
 TEMPLATES = [
     {
@@ -85,7 +112,8 @@ PULSE_DEPENDENCY_TIMEOUT_S = env_int("PULSE_DEPENDENCY_TIMEOUT_S", default=2)
 
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.postgresql",
+        # Postgres, plus the search_path of the current tenant.
+        "ENGINE": "django_tenants.postgresql_backend",
         "NAME": env_str("POSTGRES_DB"),
         "USER": env_str("POSTGRES_USER"),
         "PASSWORD": env_str("POSTGRES_PASSWORD"),
@@ -94,6 +122,8 @@ DATABASES = {
         "OPTIONS": {"connect_timeout": PULSE_DEPENDENCY_TIMEOUT_S},
     }
 }
+# Migrations of shared apps run in public only, of tenant apps in tenant schemas only.
+DATABASE_ROUTERS = ["django_tenants.routers.TenantSyncRouter"]
 
 
 # Users and passwords
@@ -175,7 +205,11 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "core.exception_handler.exception_handler",
     # Closed by default: a view is public only by subclassing core.views.PublicAPIView.
     "DEFAULT_AUTHENTICATION_CLASSES": ["accounts.authentication.JWTAuthentication"],
-    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    # Inside /t/<slug>/, a valid token that is not a member there gets 404.
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+        "orgs.permissions.IsMember",
+    ],
     "DEFAULT_THROTTLE_CLASSES": ["core.throttling.RateLimitThrottle"],
     "NUM_PROXIES": PULSE_NUM_PROXIES,
 }
@@ -208,6 +242,9 @@ CELERY_BROKER_URL = env_str("CELERY_BROKER_URL")
 CELERY_TASK_IGNORE_RESULT = True
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_TIMEZONE = TIME_ZONE
+# A task runs in the schema it was queued from (tenant-schemas-celery). The tenant
+# row it loads for that is kept this long instead of read again for every task.
+CELERY_TASK_TENANT_CACHE_SECONDS = 60
 PULSE_WEBHOOK_URL = env_str("PULSE_WEBHOOK_URL", default="http://catcher:8000/webhook")
 PULSE_WEBHOOK_SECRET = env_str("PULSE_WEBHOOK_SECRET")
 PULSE_ALERT_MAX_ATTEMPTS = env_int("PULSE_ALERT_MAX_ATTEMPTS", default=5)
@@ -221,7 +258,15 @@ CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
         "LOCATION": PULSE_REDIS_URL,
-    }
+        # Every key starts with the current schema: no tenant reads another's.
+        "KEY_FUNCTION": "django_tenants.cache.make_key",
+    },
+    # Rate-limit counters, the same Redis without the schema in the key: a client's
+    # limit is one, however many organizations it calls (core/ratelimit.py).
+    "ratelimit": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": PULSE_REDIS_URL,
+    },
 }
 # How long /status is served from the cache. 0 turns the cache off.
 PULSE_STATUS_CACHE_SECONDS = env_int("PULSE_STATUS_CACHE_SECONDS", default=15)

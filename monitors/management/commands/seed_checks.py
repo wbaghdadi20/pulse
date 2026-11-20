@@ -1,13 +1,10 @@
 from typing import Any
 
-from django.core.management.base import BaseCommand, CommandParser
+from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.db import connection, transaction
 
-from accounts.models import User
 from monitors.models import Monitor
-
-# Owns the seed monitors. No usable password: nobody can log in as it.
-SEED_OWNER = "seed@pulse.invalid"
+from orgs.models import Organization
 
 # One INSERT ... SELECT over generate_series: Postgres builds every row itself,
 # which takes seconds. Inserting rows one by one from Python would take minutes.
@@ -37,17 +34,20 @@ class Command(BaseCommand):
     def add_arguments(self, parser: CommandParser) -> None:
         parser.add_argument("--count", type=int, default=500_000)
         parser.add_argument("--monitors", type=int, default=10)
+        # The organization whose schema gets them: make seed creates acme.
+        parser.add_argument("--org", default="acme")
 
-    @transaction.atomic
     def handle(self, *args: Any, **options: Any) -> None:
-        count: int = options["count"]
-        monitors: int = options["monitors"]
-        owner = User.objects.filter(
-            email=SEED_OWNER
-        ).first() or User.objects.create_user(SEED_OWNER)
+        org = Organization.objects.filter(slug=options["org"]).first()
+        if org is None:
+            raise CommandError(f"No organization {options['org']!r}: make seed first.")
+        with org, transaction.atomic():
+            self._seed(options["count"], options["monitors"])
+
+    def _seed(self, count: int, monitors: int) -> None:
+        # Assigned to nobody: no one has to own them for checks to count.
         monitor_ids = [
             Monitor.objects.get_or_create(
-                owner=owner,
                 name=f"seed-{i}",
                 defaults={
                     "url": f"http://seed-{i}.invalid/",

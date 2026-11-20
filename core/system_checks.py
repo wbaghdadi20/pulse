@@ -36,6 +36,9 @@ MAX_NUM_PROXIES = 5
 MAX_DEPENDENCY_TIMEOUT_S = 10
 # Hourly sums are a twelfth of the rows or less; a year of raw checks is no retention.
 MAX_RAW_CHECK_DAYS = 365
+# A signup waiting longer than gunicorn's 30 s worker timeout is killed anyway.
+MIN_SIGNUP_LOCK_TIMEOUT_MS = 100
+MAX_SIGNUP_LOCK_TIMEOUT_MS = 30_000
 
 
 @register()
@@ -121,6 +124,13 @@ def check_bounded_settings(
         MAX_RAW_CHECK_DAYS,
         id="pulse.E011",
         hint="Set it in .env. Days a check is kept before only its hour's sums remain.",
+    )
+    errors += _in_range(
+        "PULSE_SIGNUP_LOCK_TIMEOUT_MS",
+        MIN_SIGNUP_LOCK_TIMEOUT_MS,
+        MAX_SIGNUP_LOCK_TIMEOUT_MS,
+        id="pulse.E012",
+        hint="Set it in .env. A signup waiting longer for its turn answers 503.",
     )
     return errors
 
