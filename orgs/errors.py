@@ -29,7 +29,7 @@ class NotAnActiveMember(InvalidInputError):
 
 
 class OrganizationsBusy(UnavailableError):
-    """Another organization is being created, or the template migrated, for too long."""
+    """Organizations are created one at a time, and this one waited too long."""
 
     def __init__(self) -> None:
         super().__init__(
@@ -37,6 +37,10 @@ class OrganizationsBusy(UnavailableError):
         )
 
 
-class TemplateNotReady(Exception):
-    """Not a domain error: the template schema is missing, behind or ahead of the
-    code. `make migrate`, with the code that is deployed."""
+class TemplateNotReady(UnavailableError):
+    """The template schema is missing, behind or ahead of the code: a deploy in
+    progress, or `make migrate` not run. `detail` says which, for the log only."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__("Signup is unavailable for a moment. Try again shortly.", 30)
+        self.detail = detail
