@@ -20,3 +20,15 @@ class ConflictError(DomainError):
 
 class AuthenticationError(DomainError):
     """The caller did not prove who they are."""
+
+
+class InvalidInputError(DomainError):
+    """The input breaks a rule. `field` names the input it is about, when there is one."""
+
+    def __init__(self, message: str, field: str | None = None) -> None:
+        super().__init__(message)
+        self.field = field
+
+
+class UnavailableError(DomainError):
+    """It cannot be done now, and may succeed if tried again shortly."""
