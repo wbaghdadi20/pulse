@@ -44,8 +44,13 @@ INSTALLED_APPS = [
     "rest_framework",
     "core",
     "accounts",
+    "orgs",
     "monitors",
 ]
+
+# Organizations are django-tenants' tenants (docs/adr/0026).
+TENANT_MODEL = "orgs.Organization"
+TENANT_DOMAIN_MODEL = "orgs.Domain"
 
 MIDDLEWARE = [
     # First, so that what the others answer and log carries the id too.

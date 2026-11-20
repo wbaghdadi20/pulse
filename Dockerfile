@@ -41,6 +41,7 @@ COPY accounts/ accounts/
 COPY config/ config/
 COPY core/ core/
 COPY monitors/ monitors/
+COPY orgs/ orgs/
 
 USER app
 
