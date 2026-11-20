@@ -3,6 +3,10 @@
 pytest-django does the heavy lifting: it creates a separate `test_<db>` database
 once per run, and wraps every test marked `django_db` in a transaction that is
 rolled back afterwards, so each test starts from empty tables.
+
+Every test database also holds the template schema and two organizations, acme and
+globex, created once and committed. A test that uses the database runs inside acme's
+schema, and its clients call /t/acme/... (docs/adr/0026).
 """
 
 import fcntl
@@ -10,15 +14,22 @@ import ipaddress
 import os
 import socket
 import tempfile
+import threading
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import httpx
 import pytest
 import redis
-from django.core.cache import cache
+from django.apps import apps
+from django.conf import settings as django_settings
+from django.core.cache import cache, caches
+from django.core.management.color import no_style
+from django.db import connection
+from django.test.utils import setup_databases, teardown_databases
+from django.urls import Resolver404, resolve
 from hypothesis import settings as hypothesis_settings
 from rest_framework.test import APIClient
 
@@ -26,6 +37,10 @@ from accounts import tokens
 from accounts.models import User
 from monitors import clients, ssrf
 from monitors.models import Monitor
+from orgs import middleware
+from orgs import services as orgs
+from orgs.models import Membership, Organization
+from orgs.tenancy import current_schema, in_organization
 
 # Property tests: a fast everyday profile, a thorough one for CI.
 # Select with HYPOTHESIS_PROFILE=ci pytest
@@ -47,24 +62,237 @@ MONITOR_PAYLOAD = {
     "interval_s": 30,
 }
 OWNER_EMAIL = "owner@example.com"
+TENANT_SLUGS = ("acme", "globex")
 
 
-def default_owner() -> User:
-    """The account behind the `user` and `api` fixtures. No usable password."""
-    existing = User.objects.filter(email=OWNER_EMAIL).first()
-    return existing or User.objects.create_user(OWNER_EMAIL)
+def on_test_database() -> bool:
+    return str(connection.settings_dict["NAME"]).startswith("test_")
 
 
-def create_monitor(owner: User | None = None, **fields: Any) -> Monitor:
-    """A saved monitor: MONITOR_PAYLOAD with `fields` on top, owned by the default owner."""
-    return Monitor.objects.create(
-        owner=owner or default_owner(), **{**MONITOR_PAYLOAD, **fields}
+@pytest.fixture(scope="session")
+def django_db_setup(
+    django_db_setup, django_db_blocker, django_db_keepdb, django_db_createdb
+) -> Iterator[None]:
+    """The template and both organizations, once per test database. Outside any
+    test's transaction: they are committed, and kept by --reuse-db.
+
+    pytest-django sets up a test database only for tests marked to use one. The
+    fixtures that commit write without that mark, so the test database is set up
+    here when nothing else did: never the development one.
+    """
+    created = None
+    with django_db_blocker.unblock():
+        if not on_test_database():
+            created = setup_databases(
+                verbosity=0,
+                interactive=False,
+                aliases=dict.fromkeys(["default"]),
+                serialized_aliases=set(),
+                keepdb=django_db_keepdb and not django_db_createdb,
+            )
+        assert on_test_database(), connection.settings_dict["NAME"]
+        if not orgs.template_is_current():
+            orgs.migrate_template()
+        for slug in TENANT_SLUGS:
+            if not Organization.objects.filter(slug=slug).exists():
+                orgs.create_organization(slug.title(), slug)
+            # Known to this process from the start, so no test's queries depend on
+            # whether an earlier test already asked for the slug.
+            middleware.tenant_for(slug)
+    yield
+    if created is not None and not django_db_keepdb:
+        with django_db_blocker.unblock():
+            teardown_databases(created, verbosity=0)
+
+
+def organization(slug: str) -> Organization:
+    org = Organization.objects.get(slug=slug)
+    assert isinstance(org, Organization)
+    return org
+
+
+@pytest.fixture
+def acme(db) -> Organization:
+    """The organization every database test runs in (see in_tenant)."""
+    return organization("acme")
+
+
+@pytest.fixture
+def globex(db) -> Organization:
+    """The other organization, not entered: `with globex:` to work in its schema."""
+    return organization("globex")
+
+
+def uses_database(request: pytest.FixtureRequest) -> bool:
+    names = request.fixturenames
+    return (
+        "django_db" in request.keywords or "db" in names or "transactional_db" in names
     )
 
 
-def client_for(user: User) -> APIClient:
+@pytest.fixture(autouse=True)
+def in_tenant(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Every test that touches the database runs inside acme's schema."""
+    if not uses_database(request):
+        yield
+        return
+    with request.getfixturevalue("acme"):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def forget_organizations() -> Iterator[None]:
+    """Organizations made in a test go with its transaction; so must the middleware's
+    memory of their slugs. acme and globex stay."""
+    yield
+    middleware.forget_for_tests(keep=TENANT_SLUGS)
+
+
+def use_public() -> None:
+    """Leave the organization: what runs next sees public only."""
+    connection.set_schema_to_public()  # type: ignore[attr-defined]
+
+
+def empty_tenant_tables() -> None:
+    """TRUNCATE every tenant table in the schema the connection is in."""
+    tables = [
+        model._meta.db_table
+        for app in django_settings.TENANT_APPS
+        for model in apps.get_app_config(app).get_models()
+    ]
+    with connection.cursor() as cursor:
+        for statement in connection.ops.sql_flush(
+            no_style(), tables, allow_cascade=True
+        ):
+            cursor.execute(statement)
+
+
+@pytest.fixture
+def committed(django_db_setup, django_db_blocker) -> Iterator[Organization]:
+    """No test transaction, for a test that needs a second connection to see its rows.
+
+    Runs in acme, and may write acme's tables only: they are emptied afterwards, and
+    the test fails if it left anything behind in public.
+    """
+    shared = (User, Membership, Organization)
+    with django_db_blocker.unblock():
+        assert on_test_database(), connection.settings_dict["NAME"]
+        before = [model.objects.count() for model in shared]
+        org = organization("acme")
+        with org:
+            empty_tenant_tables()  # whatever an interrupted run left
+            try:
+                yield org
+            finally:
+                empty_tenant_tables()
+        assert [model.objects.count() for model in shared] == before
+
+
+@pytest.fixture
+def template_being_migrated(monkeypatch) -> Iterator[None]:
+    """Another connection holds the template's lock, as migrate_template does. A
+    clone gives up after 0.2 s here, not the 2 s of production."""
+    monkeypatch.setattr(orgs, "LOCK_TIMEOUT", "200ms")
+    taken, done = threading.Event(), threading.Event()
+
+    def hold() -> None:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_lock(%s)", [orgs.TEMPLATE_LOCK])
+                taken.set()
+                done.wait(10)
+                cursor.execute("SELECT pg_advisory_unlock(%s)", [orgs.TEMPLATE_LOCK])
+        finally:
+            connection.close()
+
+    thread = threading.Thread(target=hold)
+    thread.start()
+    assert taken.wait(5)
+    yield
+    done.set()
+    thread.join(10)
+
+
+class TenantClient(APIClient):
+    """DRF's test client for one organization. What it adds: a path the public
+    URLconf does not know, /monitors/ say, is sent as /t/<slug>/monitors/. Paths
+    under /t/ and public ones (/signup, /health) go as they are."""
+
+    def __init__(self, slug: str = "acme", **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.prefix = f"/t/{slug}"
+
+    def request(self, **request: Any) -> Any:
+        path = request["PATH_INFO"]
+        if not path.startswith("/t/") and not is_public(path):
+            request["PATH_INFO"] = self.prefix + path
+        return super().request(**request)
+
+
+def is_public(path: str) -> bool:
+    try:
+        resolve(path, urlconf=django_settings.PUBLIC_SCHEMA_URLCONF)
+    except Resolver404:
+        return False
+    return True
+
+
+def default_owner() -> User:
+    """The account behind the `user` and `api` fixtures. No usable password. What it
+    adds: inside an organization, the account is also its owner (a membership), so
+    that organization's endpoints let it in."""
+    existing = User.objects.filter(email=OWNER_EMAIL).first()
+    user = existing or User.objects.create_user(OWNER_EMAIL)
+    if in_organization():
+        membership_of(user)
+    return user
+
+
+def membership_of(user: User, org: Organization | None = None) -> Membership:
+    """The user's membership in `org`, by default the one the connection is in,
+    created as an owner if there is none: owner is the only role so far."""
+    if org is None:
+        assert in_organization(), "not inside an organization"
+        org = Organization.objects.get(schema_name=current_schema())
+    membership, _ = Membership.objects.get_or_create(
+        user=user, organization=org, defaults={"role": Membership.Role.OWNER}
+    )
+    return membership
+
+
+def create_monitor(
+    assignee: Membership | None | Literal["default"] = "default", **fields: Any
+) -> Monitor:
+    """A saved monitor: MONITOR_PAYLOAD with `fields` on top. What it adds: unless the
+    test says otherwise it is assigned to the default owner's membership, created
+    if needed (None: to nobody). It skips the services' assignee check."""
+    if assignee == "default":
+        assignee = membership_of(default_owner())
+    return Monitor.objects.create(assignee=assignee, **{**MONITOR_PAYLOAD, **fields})
+
+
+def assignee_problems() -> list[str]:
+    """TEN-2's rule, checked in every organization: each monitor's assignee is empty
+    or an active membership of that organization. One line per monitor that breaks it."""
+    problems = []
+    for org in orgs.active_tenants():
+        valid = set(
+            Membership.objects.active()
+            .filter(organization=org)
+            .values_list("pk", flat=True)
+        )
+        with org:
+            for pk, assignee in Monitor.objects.values_list("pk", "assignee_id"):
+                if assignee is not None and assignee not in valid:
+                    problems.append(
+                        f"{org.slug}: monitor {pk} -> membership {assignee}"
+                    )
+    return problems
+
+
+def client_for(user: User, slug: str = "acme") -> APIClient:
     """A client that sends this user's token, issued directly instead of through /login."""
-    client = APIClient()
+    client = TenantClient(slug)
     client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens.issue(user.pk)}")
     return client
 
@@ -76,6 +304,12 @@ def user(db) -> User:
 
 
 @pytest.fixture
+def membership(user) -> Membership:
+    """The `user`'s membership in acme."""
+    return membership_of(user)
+
+
+@pytest.fixture
 def api(user) -> APIClient:
     """DRF's test client, logged in as `user`. It talks to the Django app in-process."""
     return client_for(user)
@@ -84,7 +318,7 @@ def api(user) -> APIClient:
 @pytest.fixture
 def anon() -> APIClient:
     """The same client with no token."""
-    return APIClient()
+    return TenantClient()
 
 
 @pytest.fixture
@@ -96,10 +330,17 @@ def monitor(db) -> Monitor:
 @pytest.fixture(autouse=True)
 def local_cache(settings) -> None:
     """Every test starts with an empty in-process cache instead of the dev Redis."""
+    # The real aliases and their key functions; only where they are kept changes.
     settings.CACHES = {
-        "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}
+        alias: {
+            **config,
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": alias,
+        }
+        for alias, config in settings.CACHES.items()
     }
     cache.clear()
+    caches["ratelimit"].clear()
 
 
 class FakeDNS:

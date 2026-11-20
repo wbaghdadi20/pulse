@@ -16,6 +16,8 @@ from django.db.models import F, Q, QuerySet, Window
 from django.db.models.functions import RowNumber
 from django.utils import timezone
 
+from orgs.tenancy import current_schema, in_schema
+
 from . import uptime
 from .models import Incident, Monitor
 
@@ -53,7 +55,13 @@ def invalidate() -> None:
     Not before: a request arriving in between would rebuild the page from the old
     rows and cache that for a full TTL.
     """
-    transaction.on_commit(lambda: cache.delete(CACHE_KEY))
+    schema = current_schema()  # the page of the organization that changed
+
+    def drop() -> None:
+        with in_schema(schema):
+            cache.delete(CACHE_KEY)
+
+    transaction.on_commit(drop)
 
 
 def build_status_page(now: datetime | None = None) -> dict[str, Any]:

@@ -1,10 +1,8 @@
+"""Tenant URLs: the middleware serves these under /t/<slug>/, in that organization's
+schema. The rest, about the person or the process, are in config/urls_public.py."""
+
 from django.urls import include, path
 
-from core.views import HealthView, ReadyView
-
 urlpatterns = [
-    path("health", HealthView.as_view(), name="health"),
-    path("ready", ReadyView.as_view(), name="ready"),
-    path("", include("accounts.urls")),
     path("", include("monitors.urls")),
 ]

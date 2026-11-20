@@ -435,7 +435,7 @@ def test_the_status_page_outlives_the_raw_checks(anon):
     assert entry["uptime_percent"] == 50.0
 
 
-def test_uptime_over_30_days_takes_six_queries_however_many_hours(
+def test_uptime_over_30_days_takes_seven_queries_however_many_hours(
     api, monitor, django_assert_num_queries
 ):
     now = timezone.now()
@@ -443,9 +443,10 @@ def test_uptime_over_30_days_takes_six_queries_however_many_hours(
         add_check(monitor, now - timedelta(days=day))
     tasks.roll_up_checks()
 
-    # the token's user, the monitor, how far the roll-up got, the hours' counts,
-    # the hours' latency buckets, the checks since
-    with django_assert_num_queries(6):
+    # SET search_path into the organization, the token's user with their
+    # membership, the monitor, how far the roll-up got, the hours' counts, the
+    # hours' latency buckets, the checks since
+    with django_assert_num_queries(7):
         api.get(reverse("monitor-uptime", args=[monitor.pk]), {"days": 30})
 
 
@@ -460,7 +461,9 @@ def test_the_status_page_takes_seven_queries_once_hours_are_summed_up(
         )
     tasks.roll_up_checks()
 
-    with django_assert_num_queries(7):
+    # Plus one: the roll-up visited every organization, so the SET search_path
+    # that comes back to this one is sent with the page's first query.
+    with django_assert_num_queries(7 + 1):
         page = status_page.build_status_page()
 
     assert len(page["monitors"]) == monitors

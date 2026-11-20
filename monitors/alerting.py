@@ -16,6 +16,7 @@ from django.db.models import F
 from django.utils import timezone
 
 from core.db import violated_constraint
+from orgs.tenancy import current_schema
 
 from . import clients
 from .models import Alert, Incident
@@ -36,8 +37,12 @@ def queue_alert(incident: Incident, kind: str) -> Alert | None:
     from .tasks import send_alert  # tasks imports this module: bind at call time
 
     # Only after COMMIT: a worker that picks the message up before the row is
-    # visible would find nothing to send.
-    transaction.on_commit(lambda: send_alert.delay(alert.pk))
+    # visible would find nothing to send. The schema is the one the alert was
+    # written in, not wherever the connection is when the transaction commits.
+    headers = {"_schema_name": current_schema()}
+    transaction.on_commit(
+        lambda: send_alert.apply_async(args=(alert.pk,), headers=headers)
+    )
     return alert
 
 

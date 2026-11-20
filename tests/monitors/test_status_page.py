@@ -9,7 +9,7 @@ from django.utils import timezone
 from accounts.models import User
 from monitors import services, status_page, tasks
 from monitors.models import Check, Incident, Monitor
-from tests.conftest import MONITOR_PAYLOAD, create_monitor
+from tests.conftest import MONITOR_PAYLOAD, create_monitor, membership_of
 
 pytestmark = pytest.mark.django_db
 
@@ -200,7 +200,7 @@ def test_zero_seconds_turns_the_cache_off(
     settings.PULSE_STATUS_CACHE_SECONDS = 0
     api.get("/status")
 
-    with django_assert_num_queries(5):
+    with django_assert_num_queries(1 + 5):  # SET search_path, then the page's five
         api.get("/status")
 
 
@@ -210,7 +210,7 @@ def test_zero_seconds_turns_the_cache_off(
 @pytest.fixture
 def no_alerts(monkeypatch) -> None:
     """Committing an incident queues its alert; these tests are not about that."""
-    monkeypatch.setattr(tasks.send_alert, "delay", lambda alert_id: None)
+    monkeypatch.setattr(tasks.send_alert, "apply_async", lambda **kwargs: None)
 
 
 def test_an_incident_that_opens_shows_on_the_next_request(
@@ -267,17 +267,18 @@ def test_a_private_monitor_is_not_on_the_page(anon, monitor):
     assert "secret outage" not in anon.get("/status").content.decode()
 
 
-def test_a_new_monitor_is_private_until_its_owner_says_otherwise(api, anon):
+def test_a_new_monitor_is_private_until_someone_says_otherwise(api, anon):
     api.post("/monitors/", {**MONITOR_PAYLOAD, "name": "fresh"}, format="json")
 
     assert names_on_page(anon) == []
 
 
-def test_public_monitors_of_every_owner_are_on_the_page(anon, monitor):
+def test_public_monitors_of_every_member_are_on_the_page(anon, monitor):
     someone_else = User.objects.create_user("other@example.com")
-    create_monitor(owner=someone_else, name="theirs", is_public=True)
+    create_monitor(membership_of(someone_else), name="theirs", is_public=True)
+    create_monitor(None, name="nobody's", is_public=True)
 
-    assert names_on_page(anon) == [monitor.name, "theirs"]
+    assert names_on_page(anon) == [monitor.name, "nobody's", "theirs"]
 
 
 def test_a_monitor_created_public_is_on_the_page_on_the_next_request(

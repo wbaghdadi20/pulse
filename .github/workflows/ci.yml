@@ -96,7 +96,8 @@ jobs:
           request="curl --fail --silent --show-error"
           account='{"email": "ci@example.com", "password": "a long passphrase for ci"}'
 
-          $image --rm pulse:ci python manage.py migrate --no-input
+          # django-tenants' migrate: public and every organization. It spells it --noinput.
+          $image --rm pulse:ci python manage.py migrate --noinput
           $image --detach --name api pulse:ci
           $image --detach --name worker pulse:ci celery -A config --quiet worker --concurrency 1
 

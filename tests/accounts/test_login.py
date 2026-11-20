@@ -3,6 +3,7 @@
 import pytest
 
 from accounts.models import User
+from tests.conftest import membership_of
 
 pytestmark = pytest.mark.django_db
 
@@ -12,7 +13,10 @@ PASSWORD = "correct horse battery"
 
 @pytest.fixture
 def account() -> User:
-    return User.objects.create_user(EMAIL, PASSWORD)
+    """A member of acme, where the token is tried."""
+    user = User.objects.create_user(EMAIL, PASSWORD)
+    membership_of(user)
+    return user
 
 
 def test_login_returns_a_token_that_opens_the_api(anon, account, settings):

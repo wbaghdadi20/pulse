@@ -6,7 +6,7 @@ import pytest
 
 from core import throttling
 from core.ratelimit import Decision, fixed_window
-from tests.conftest import client_for
+from tests.conftest import client_for, membership_of
 
 MINUTE = 1_800_000_000 // 60 * 60  # a timestamp exactly on a minute boundary
 
@@ -66,7 +66,7 @@ class RecordingCache:
 
 def test_the_counter_expires_instead_of_staying_in_the_cache_forever(monkeypatch):
     recording = RecordingCache()
-    monkeypatch.setattr("core.ratelimit.cache", recording)
+    monkeypatch.setattr("core.ratelimit.counters", recording)
 
     fixed_window("alice", 3, now=MINUTE)
 
@@ -140,6 +140,17 @@ def test_another_address_has_its_own_count(user, settings):
     assert here.get("/monitors/").status_code == 200
     assert here.get("/monitors/").status_code == 429
     assert elsewhere.get("/monitors/", REMOTE_ADDR="203.0.113.9").status_code == 200
+
+
+def test_one_count_covers_every_organization_the_client_calls(user, globex, settings):
+    """Per organization, a client in 100 of them would get 100 times the limit."""
+    settings.PULSE_RATE_LIMIT_PER_MINUTE = 2
+    membership_of(user, globex)
+    acme, other = client_for(user, "acme"), client_for(user, "globex")
+
+    codes = [c.get("/monitors/").status_code for c in (acme, other, acme, other)]
+
+    assert codes == [200, 200, 429, 429]
 
 
 def test_a_made_up_forwarded_for_header_does_not_buy_a_new_count(anon):

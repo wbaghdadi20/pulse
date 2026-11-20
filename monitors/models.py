@@ -1,6 +1,5 @@
 from datetime import datetime
 
-from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models import Q
@@ -16,16 +15,19 @@ class Monitor(models.Model):
         GET = "GET"
         HEAD = "HEAD"
 
-    # No single-column index: uq_monitor_owner_name below starts with owner_id.
-    owner = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
+    # A public.memberships id, or nobody. No database constraint across schemas:
+    # orgs.services.require_active_member stands in for one (docs/adr/0026).
+    assignee = models.ForeignKey(
+        "orgs.Membership",
+        null=True,
+        blank=True,
+        on_delete=models.DO_NOTHING,
+        db_constraint=False,
         related_name="monitors",
-        db_index=False,
     )
     name = models.CharField(max_length=100)
     url = models.CharField(max_length=2048, validators=[validate_http_url])
-    # Shown on the public status page. Off unless the owner turns it on.
+    # Shown on the public status page. Off unless someone turns it on.
     is_public = models.BooleanField(default=False)
     method = models.CharField(max_length=4, choices=Method.choices, default=Method.GET)
     expected_status = models.PositiveSmallIntegerField(
@@ -52,11 +54,9 @@ class Monitor(models.Model):
         db_table = "monitors"
         constraints = [
             # Named, so the service can tell this violation apart from others.
-            # Per owner: a name unique across everyone would tell one user which
-            # names another user has taken.
-            models.UniqueConstraint(
-                fields=["owner", "name"], name="uq_monitor_owner_name"
-            ),
+            # Unique in the schema, so in the organization: a monitor changes
+            # assignee, never organization (ROLE-3).
+            models.UniqueConstraint(fields=["name"], name="uq_monitor_name"),
         ]
 
     def __str__(self) -> str:

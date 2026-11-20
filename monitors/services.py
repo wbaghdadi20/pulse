@@ -1,10 +1,11 @@
 """Business logic for monitors.
 
 No HTTP in here: views and Celery tasks call the same functions.
-Convention: get_monitor() turns an id and its owner into a monitor (or raises
-MonitorNotFound); every other function takes the monitor itself. It is the one
-place a request reaches a monitor through, so it is the one place ownership is
-checked.
+Convention: get_monitor() turns an id and the caller's membership into a monitor
+(or raises MonitorNotFound); every other function takes the monitor itself. It is
+the one place a request reaches a monitor through, so it is the one place the
+caller's access is checked. Everything here runs in the current organization's
+schema: other organizations' monitors are not in reach at all.
 """
 
 from datetime import datetime, timedelta
@@ -28,8 +29,9 @@ from django.db.models.functions import JSONObject
 from django.db.models.lookups import GreaterThan
 from django.utils import timezone
 
-from accounts.models import User
 from core.db import violated_constraint
+from orgs.models import Membership
+from orgs.services import require_active_member
 
 from . import alerting, incidents, status_page, uptime
 from .checks import CheckResult, probe
@@ -37,8 +39,9 @@ from .errors import IncidentAlreadyOpen, MonitorNameTaken, MonitorNotFound
 from .models import Alert, Check, Incident, Monitor
 
 
-def _monitors(owner: User) -> QuerySet[Monitor]:
-    """This owner's monitors, each with its newest check as `latest_check`, in one query.
+def _monitors(assignee: Membership) -> QuerySet[Monitor]:
+    """The monitors assigned to this member, each with its newest check as
+    `latest_check`, in one query. Ticket 3's roles widen it.
 
     A correlated subquery builds the check as a JSON object. With LIMIT 1 over the
     (monitor_id, checked_at) index it reads one index entry per monitor.
@@ -56,27 +59,29 @@ def _monitors(owner: User) -> QuerySet[Monitor]:
             )
         )[:1]
     )
-    return Monitor.objects.filter(owner=owner).annotate(
+    return Monitor.objects.filter(assignee=assignee).annotate(
         latest_check=Subquery(newest_check)
     )
 
 
-def list_monitors(owner: User) -> QuerySet[Monitor]:
+def list_monitors(assignee: Membership) -> QuerySet[Monitor]:
     # Lazy: the paginator adds COUNT(*) and LIMIT/OFFSET before anything runs.
-    return _monitors(owner).order_by("id")
+    return _monitors(assignee).order_by("id")
 
 
-def get_monitor(pk: int, owner: User) -> Monitor:
-    """Someone else's monitor is "not found", exactly like one that does not exist:
-    a different answer would confirm the id is in use."""
+def get_monitor(pk: int, assignee: Membership) -> Monitor:
+    """A monitor assigned to someone else is "not found", exactly like one that does
+    not exist: a different answer would confirm the id is in use."""
     try:
-        return _monitors(owner).get(pk=pk)
+        return _monitors(assignee).get(pk=pk)
     except Monitor.DoesNotExist:
         raise MonitorNotFound(pk) from None
 
 
-def create_monitor(owner: User, data: dict[str, Any]) -> Monitor:
-    monitor = Monitor(owner=owner, **data)
+def create_monitor(assignee: Membership | None, data: dict[str, Any]) -> Monitor:
+    if assignee is not None:
+        require_active_member(assignee.pk)
+    monitor = Monitor(assignee=assignee, **data)
     _save(monitor)
     if monitor.is_public:
         status_page.invalidate()
@@ -84,6 +89,9 @@ def create_monitor(owner: User, data: dict[str, Any]) -> Monitor:
 
 
 def update_monitor(monitor: Monitor, changes: dict[str, Any]) -> Monitor:
+    assignee = changes.get("assignee")
+    if assignee is not None:
+        require_active_member(assignee.pk)
     was_public = monitor.is_public
     for field, value in changes.items():
         setattr(monitor, field, value)
@@ -239,6 +247,6 @@ def _save(monitor: Monitor, **save_kwargs: Any) -> None:
         with transaction.atomic():
             monitor.save(**save_kwargs)
     except IntegrityError as exc:
-        if violated_constraint(exc) == "uq_monitor_owner_name":
+        if violated_constraint(exc) == "uq_monitor_name":
             raise MonitorNameTaken(monitor.name) from exc
         raise

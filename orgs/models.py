@@ -21,7 +21,8 @@ class Organization(TenantMixin):  # type: ignore[misc]
     slug = models.CharField(max_length=MAX_LENGTH, validators=[validate_slug])
     created_at = models.DateTimeField(auto_now_add=True)
 
-    # Saving the row does not create its schema: that is a step of its own.
+    # orgs.services.create_organization creates the schema, so that its error is
+    # the one raised, not the library's cleanup failing after it.
     auto_create_schema = False
     # The template holds no rows worth copying; NODATA makes sure none are.
     clone_mode = "NODATA"

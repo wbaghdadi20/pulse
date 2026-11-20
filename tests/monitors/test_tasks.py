@@ -96,7 +96,7 @@ def test_run_check_for_a_deleted_monitor_does_nothing(fake_check):
 def test_run_check_skips_a_monitor_another_worker_is_checking(
     monitor, fake_check, redis_db
 ):
-    key = f"lock:monitor:{monitor.pk}"
+    key = tasks.lock_key(monitor.pk)
     redis_db.set(key, "the other worker's token")
 
     tasks.run_check(monitor.pk)
@@ -131,7 +131,7 @@ def test_run_check_frees_the_lock_when_the_check_blows_up(
 def test_run_check_leaves_a_lock_it_no_longer_owns(
     monitor, monkeypatch, redis_db, caplog
 ):
-    key = f"lock:monitor:{monitor.pk}"
+    key = tasks.lock_key(monitor.pk)
 
     def lock_expires_and_is_retaken(monitor_id):
         redis_db.set(key, "the next worker's token")

@@ -14,7 +14,7 @@ pytestmark = pytest.mark.django_db
 
 
 @pytest.mark.parametrize("checks", [1, 300])
-def test_uptime_takes_three_queries_however_many_checks(
+def test_uptime_takes_four_queries_however_many_checks(
     api, monitor, django_assert_num_queries, checks
 ):
     Check.objects.bulk_create(
@@ -22,7 +22,9 @@ def test_uptime_takes_three_queries_however_many_checks(
         for _ in range(checks)
     )
 
-    with django_assert_num_queries(3):  # the token's user, the monitor, the aggregate
+    # SET search_path into the organization, the token's user with their membership,
+    # the monitor, the aggregate
+    with django_assert_num_queries(4):
         body = api.get(reverse("monitor-uptime", args=[monitor.pk])).json()
 
     assert body["checks"] == checks

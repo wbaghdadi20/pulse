@@ -16,7 +16,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.authentication import current_user
+from accounts.authentication import current_membership
 from core.pagination import AfterIdPagination, DefaultPagination
 from core.views import PublicAPIView
 
@@ -29,12 +29,13 @@ LIVE_POLL_SECONDS = 5
 
 
 def own_monitor(request: Request, pk: int) -> Monitor:
-    """The caller's monitor with this id. 404 if there is none, or it is someone else's."""
-    return services.get_monitor(pk, current_user(request))
+    """The caller's monitor with this id. 404 if there is none, or it is assigned to
+    someone else."""
+    return services.get_monitor(pk, current_membership(request))
 
 
 class MonitorListView(APIView):
-    """/monitors/ : the caller's monitors."""
+    """/monitors/ : the monitors assigned to the caller."""
 
     def get(self, request: Request) -> Response:
         paginator: AfterIdPagination | DefaultPagination = (
@@ -42,7 +43,7 @@ class MonitorListView(APIView):
             if "after" in request.query_params
             else DefaultPagination()
         )
-        monitors = services.list_monitors(current_user(request))
+        monitors = services.list_monitors(current_membership(request))
         page = paginator.paginate_queryset(monitors, request, view=self)
         return paginator.get_paginated_response(MonitorSerializer(page, many=True).data)
 
@@ -50,7 +51,7 @@ class MonitorListView(APIView):
         serializer = MonitorSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         monitor = services.create_monitor(
-            current_user(request), serializer.validated_data
+            current_membership(request), serializer.validated_data
         )
         return Response(MonitorSerializer(monitor).data, status=status.HTTP_201_CREATED)
 

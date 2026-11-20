@@ -58,7 +58,9 @@ def test_a_page_past_the_end_is_empty_not_an_error(api, monitors):
 
 
 def test_there_is_no_count_and_no_count_query(api, monitors, django_assert_num_queries):
-    with django_assert_num_queries(2):  # the token's user, then the page
+    # Entering the organization (SET search_path), the token's user with their
+    # membership, then the page.
+    with django_assert_num_queries(3):
         body = api.get("/monitors/?after=0&limit=2").json()
 
     assert set(body) == {"next", "results"}
@@ -76,9 +78,10 @@ def test_a_row_deleted_between_pages_does_not_shift_the_next_page(api, monitors)
     assert ids(by_keyset) == [monitors[2].pk, monitors[3].pk]
 
 
-def test_limit_defaults_and_is_capped_like_offset_pagination(api, user):
+def test_limit_defaults_and_is_capped_like_offset_pagination(api, membership):
     Monitor.objects.bulk_create(
-        Monitor(owner=user, **{**MONITOR_PAYLOAD, "name": f"m{n}"}) for n in range(105)
+        Monitor(assignee=membership, **{**MONITOR_PAYLOAD, "name": f"m{n}"})
+        for n in range(105)
     )
 
     assert len(api.get("/monitors/?after=0").json()["results"]) == 20

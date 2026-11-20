@@ -20,6 +20,10 @@ RATE     ?= 5
 DURATION ?= 2m
 MONITOR  ?= 1
 DAYS     ?= 30
+# The organization `status`, `explain` and the demo targets look at. Its schema is
+# org_ and the slug with "_" for "-".
+ORG      ?= acme
+SCHEMA   := org_$(subst -,_,$(ORG))
 
 # migrate and the seed run in whichever api container is up. If that is the
 # development one they would land in the development database, so the load-test
@@ -60,11 +64,11 @@ logs: ## Follow one service's log: make logs SERVICE=worker
 psql: ## Open psql on Pulse's database, or another: make psql DB=pulse_loadtest
 	$(DEV) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$(if $(DB),$(DB),$$POSTGRES_DB)"'
 
-explain: ## How Postgres runs the uptime query: make explain DB=pulse_loadtest MONITOR=123 DAYS=30
-	$(DEV) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$(if $(DB),$(DB),$$POSTGRES_DB)" -c "EXPLAIN (ANALYZE, BUFFERS) SELECT count(*), count(ok) FILTER (WHERE NOT ok), percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) FROM checks WHERE monitor_id = $(MONITOR) AND checked_at > now() - make_interval(days => $(DAYS))"'
+explain: ## How Postgres runs the uptime query in an organization: make explain ORG=acme MONITOR=1 DAYS=30
+	$(DEV) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$(if $(DB),$(DB),$$POSTGRES_DB)" -c "SET search_path TO $(SCHEMA)" -c "EXPLAIN (ANALYZE, BUFFERS) SELECT count(*), count(ok) FILTER (WHERE NOT ok), percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) FROM checks WHERE monitor_id = $(MONITOR) AND checked_at > now() - make_interval(days => $(DAYS))"'
 
-status: ## Print the state of each monitor on the status page
-	@curl -s localhost:8100/status | python3 -c 'import json, sys; [print(m["state"], m["name"], sep="\t") for m in json.load(sys.stdin)["monitors"]]'
+status: ## Print the state of each monitor on an organization's status page: make status ORG=acme
+	@curl -s localhost:8100/t/$(ORG)/status | python3 -c 'import json, sys; [print(m["state"], m["name"], sep="\t") for m in json.load(sys.stdin)["monitors"]]'
 
 rollup: ## Run the hourly roll-up of checks now
 	$(DEV) exec worker celery -A config call monitors.tasks.roll_up_checks
@@ -80,8 +84,8 @@ demo-ready: ## Before the demo: is everything it needs running? Each line says o
 		&& echo "ok    shop, shop-db and shop-redis are running" || echo "FAIL  part of shop is stopped.        Run: make demo-fix, or make up"
 	@curl -fs -o /dev/null localhost:8400/ \
 		&& echo "ok    catcher answers" || echo "FAIL  catcher does not answer.      Run: make up"
-	@curl -s localhost:8100/status | python3 -c 'import json, sys; m = json.load(sys.stdin)["monitors"]; d = [x["name"] for x in m if x["state"] == "down"]; print("ok    %d monitors, all up" % len(m) if m and not d else "FAIL  down: %s. Run: make demo-fix, wait 30 s, make demo-ready" % (", ".join(d) or "no public monitor at all"))' 2>/dev/null \
-		|| echo "FAIL  no status page.               Run: make up"
+	@curl -s localhost:8100/t/$(ORG)/status | python3 -c 'import json, sys; m = json.load(sys.stdin)["monitors"]; d = [x["name"] for x in m if x["state"] == "down"]; print("ok    %d monitors, all up" % len(m) if m and not d else "FAIL  down: %s. Run: make demo-fix, wait 30 s, make demo-ready" % (", ".join(d) or "no public monitor at all"))' 2>/dev/null \
+		|| echo "FAIL  no status page for $(ORG).      Run: make up"
 
 demo-watch: ## Follow the worker: failed checks and alerts sent, as they happen (Ctrl+C stops)
 	$(DEV) logs -f --since 1m worker | grep --line-buffered -oE '"message": "(monitor [0-9]+ ok=False[^"]*|alert [0-9]+ sent[^"]*)"'

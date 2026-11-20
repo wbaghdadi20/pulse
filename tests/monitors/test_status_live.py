@@ -20,7 +20,7 @@ def monitor(db) -> Monitor:
 
 @pytest.fixture
 def no_alerts(monkeypatch) -> None:
-    monkeypatch.setattr(tasks.send_alert, "delay", lambda alert_id: None)
+    monkeypatch.setattr(tasks.send_alert, "apply_async", lambda **kwargs: None)
 
 
 def test_the_page_comes_with_a_weak_etag_and_must_be_revalidated(anon, monitor):
@@ -122,7 +122,7 @@ def test_the_live_page_is_html_and_needs_no_login(anon):
 
     assert response.status_code == 200
     assert response.headers["Content-Type"].startswith("text/html")
-    assert 'fetch("/status"' in response.content.decode()
+    assert 'fetch("/t/acme/status"' in response.content.decode()
 
 
 def test_the_live_page_holds_no_monitor_data(anon):
