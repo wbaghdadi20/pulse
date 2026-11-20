@@ -1,6 +1,6 @@
 # 25. The status page updates by polling, and `/status` answers 304 when nothing changed
 
-- Status: accepted
+- Status: accepted, amended 2026-11-20 (ticket 1, subtask 1.2)
 - Date: 2026-11-15 (D10 Extra)
 
 ## Context
@@ -65,3 +65,10 @@ script and style (a nonce, new for every response) and requests to Pulse itself.
 - The page needs JavaScript. Without it a line points to `/status`.
 - `/status` stays what it was for every other client: the same JSON, two more
   headers.
+
+## Amended 2026-11-20 (ticket 1, subtask 1.2)
+
+The page is per organization: `/t/<slug>/status/live`, and it asks that
+organization's `/t/<slug>/status` (the template builds the URL with `{% url %}`,
+so it follows the route). Subtask 1.5 turns `/status` into the status API with
+CORS, and this page stays as its demo ([ADR 0026](0026-schema-per-tenant.md)).

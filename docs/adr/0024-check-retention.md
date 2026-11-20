@@ -1,6 +1,6 @@
 # 24. Raw checks are kept a week; older ones survive as hourly sums with latency buckets
 
-- Status: accepted
+- Status: accepted, amended 2026-11-20 (ticket 1, subtask 1.2)
 - Date: 2026-11-15 (D10 Extra)
 
 ## Context
@@ -109,3 +109,9 @@ Measured on a copy of the load-test database: 4,666,100 checks of 500 monitors.
 - The roll-up and the bucket sum are raw SQL, the only two statements in the
   app that are. Both are fixed text with parameters; the ORM cannot express
   `INSERT ... SELECT` or `jsonb_each_text`.
+
+## Amended 2026-11-20 (ticket 1, subtask 1.2)
+
+Checks and hours live in each organization's schema ([ADR 0026](0026-schema-per-tenant.md)).
+`roll_up_checks` runs the roll-up, prune and forget in each organization in turn;
+the raw SQL is unchanged and names no schema, so it acts on the one it runs in.

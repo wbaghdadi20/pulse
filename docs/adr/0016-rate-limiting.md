@@ -1,6 +1,6 @@
 # 16. A fixed-window rate limit, counted in Redis, applied by DRF throttles
 
-- Status: accepted
+- Status: accepted, amended 2026-11-20 (ticket 1, subtask 1.2)
 - Date: 2026-11-12 (D8)
 
 ## Context
@@ -73,3 +73,10 @@ views change. `tests/core/test_rate_limit.py` swaps one in to show it.
 - With Redis down the API answers 500 rather than run unlimited. Redis is already
   required as the broker.
 - The counters live in the cache database, so clearing the cache resets them.
+
+## Amended 2026-11-20 (ticket 1, subtask 1.2)
+
+The default cache's keys now start with the organization's schema
+([ADR 0026](0026-schema-per-tenant.md)). The counters use a cache alias of their
+own, `ratelimit`, on the same Redis without that prefix: a client has one count
+per minute however many organizations it calls (ticket 1, TEN-4).

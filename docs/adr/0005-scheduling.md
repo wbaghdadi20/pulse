@@ -1,6 +1,6 @@
 # 5. Celery with Redis, one beat tick that queues what is due
 
-- Status: accepted, due-detection superseded in D7
+- Status: accepted, due-detection superseded in D7, amended 2026-11-20 (ticket 1, subtask 1.2)
 - Date: 2026-11-10 (D6)
 
 ## Context
@@ -44,3 +44,10 @@ changes it with no redeploy. Tasks take ids and load the row fresh.
 - Celery's default acknowledges a task when a worker takes it, not when it
   finishes. A worker killed mid-task loses that task. Why that default is
   kept, and what late acknowledgement would change: ADR 0021.
+
+## Amended 2026-11-20 (ticket 1, subtask 1.2)
+
+Monitors live in one schema per organization ([ADR 0026](0026-schema-per-tenant.md)).
+Beat still queues one `enqueue_due_checks` every 10 s; the task enters each
+organization's schema in turn and claims its due monitors there, and each
+`run_check` message carries the schema it was queued from.
