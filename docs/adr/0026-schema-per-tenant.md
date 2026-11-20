@@ -236,9 +236,9 @@ In 1.2 the whole suite runs inside acme, on another stack on the same machine
 
 | What | Result |
 | --- | --- |
-| Parallel, `-n auto` | 740 passed, 1 expected failure; 8.95 to 10.39 s over nine runs, the same result each time |
-| Serial | 20.6 s |
-| Parallel, `--create-db` | 10.4 s |
+| Parallel, `-n auto` | 751 passed, 1 expected failure; 9.1 to 11.6 s over eight runs, the same result each time |
+| Serial | 21.8 s |
+| Parallel, `--create-db` | 10.9 s |
 
 ## Threshold verdicts
 
@@ -246,7 +246,7 @@ In 1.2 the whole suite runs inside acme, on another stack on the same machine
 | --- | --- | --- |
 | Creating a tenant < 2 s | 0.16 s, either way | met |
 | Tick at 100 tenants < 1 s | 0.35 s in-process, 0.38 to 0.52 s on the worker | met |
-| Suite < 2x today | parallel 1.2x to 1.4x, serial 1.7x, with about 160 tests more (two of them run pytest again in a subprocess) | met |
+| Suite < 2x today | parallel 1.2x to 1.6x, serial 1.8x, with about 170 tests more (two of them run pytest again in a subprocess) | met |
 | No test passes alone but fails in parallel | the same result in every run, serial and parallel, once the transactional test was rewritten (below) | met |
 
 ## Consequences
