@@ -109,12 +109,29 @@ def test_a_template_that_does_not_match_the_code_creates_no_account(monkeypatch)
     assert nothing_was_created()
 
 
+def test_signup_while_the_template_does_not_match_answers_503_without_details(
+    anon, monkeypatch
+):
+    on_disk = services._tenant_migrations()
+    monkeypatch.setattr(
+        services, "_tenant_migrations", lambda: on_disk | {("monitors", "9999_x")}
+    )
+
+    response = anon.post("/signup", SIGNUP, format="json")
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "30"
+    assert "9999_x" not in response.content.decode()
+    assert nothing_was_created()
+
+
 def test_a_signup_waiting_on_a_template_migration_answers_503(
     anon, template_being_migrated
 ):
     response = anon.post("/signup", SIGNUP, format="json")
 
     assert response.status_code == 503
+    assert response.headers["Retry-After"] == "5"
     assert nothing_was_created()
 
 
