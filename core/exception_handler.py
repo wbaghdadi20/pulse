@@ -24,6 +24,10 @@ class Unavailable(exceptions.APIException):
     default_detail = "Try again shortly."
     default_code = "unavailable"
 
+    def __init__(self, detail: str, wait: int) -> None:
+        super().__init__(detail)
+        self.wait = wait  # DRF turns it into Retry-After
+
 
 def exception_handler(exc: Exception, context: dict[str, Any]) -> Response | None:
     """Map domain errors to HTTP errors in one place, then let DRF build the response."""
@@ -37,5 +41,5 @@ def exception_handler(exc: Exception, context: dict[str, Any]) -> Response | Non
         # The shape of a serializer's 400: {"<field>": ["<message>"]}.
         exc = exceptions.ValidationError({exc.field or "detail": [str(exc)]})
     elif isinstance(exc, UnavailableError):
-        exc = Unavailable(str(exc))
+        exc = Unavailable(str(exc), wait=exc.retry_after)
     return drf_exception_handler(exc, context)

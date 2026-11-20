@@ -21,9 +21,10 @@ def test_invalid_input_about_no_field_in_particular_is_a_400_on_detail():
     )
 
 
-def test_unavailable_is_a_503():
-    response = exception_handler(UnavailableError("Try again shortly."), {})
+def test_unavailable_is_a_503_that_says_when_to_try_again():
+    response = exception_handler(UnavailableError("Try again shortly.", 30), {})
 
     assert response is not None
     assert response.status_code == 503
     assert response.data == {"detail": "Try again shortly."}
+    assert response.headers["Retry-After"] == "30"
