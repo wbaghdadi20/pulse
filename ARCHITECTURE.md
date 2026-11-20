@@ -343,10 +343,10 @@ one; a shared one never points into a tenant.
 
 ```mermaid
 erDiagram
-    USER ||--o{ MEMBERSHIP : "has"
+    USER |o--o{ MEMBERSHIP : "has"
     ORGANIZATION ||--o{ MEMBERSHIP : "has"
-    ORGANIZATION ||--|| DOMAIN : "is found by"
-    MEMBERSHIP ||--o{ MONITOR : "is assigned, across schemas"
+    ORGANIZATION ||--o{ DOMAIN : "is found by"
+    MEMBERSHIP |o--o{ MONITOR : "is assigned, across schemas"
     MONITOR ||--o{ CHECK : "is checked by"
     MONITOR ||--o{ CHECK_HOUR : "is summed up in"
     MONITOR ||--o{ INCIDENT : "has"
@@ -495,7 +495,7 @@ sequenceDiagram
     A->>J: verify: signature, algorithm, exp, sub
     A->>DB: SET search_path org_acme, public, then SELECT membership JOIN user JOIN organization WHERE user = sub AND schema_name = org_acme
     Note over A: bad or expired token, or no such user: 401 with WWW-Authenticate. A user who is not a member: 404 (IsMember)
-    A->>T: request.user, request.auth the membership, request.tenant its organization
+    A->>T: request.user, request.auth the membership, request.tenant its organization (for later code)
     T->>C: add rl:api:address:minute, INCR
     T->>V: get
     V->>DB: monitors WHERE assignee_id = the membership, in org_acme only
@@ -894,10 +894,12 @@ table after them lists every record.
 | Pulse cannot alert about its own Postgres | with it down nothing is queued or recorded, so a monitor on its own `/ready` stays silent. Redis carries the queue, so the same is expected there; only Postgres was measured | not scheduled: an outside watcher or a heartbeat, ADR 0018 |
 | A release is rebuilt from the tag, not promoted from the CI build | the published image could differ from the one that was tested | not scheduled: ADR 0020 |
 | The image is built for linux/amd64 only | on an arm64 machine it runs emulated or not at all | not scheduled: a second platform in the release build |
-| Signups take turns on the clone function | django-tenants replaces it and its type before every clone, and the function makes and drops two types itself, each holding a lock until commit: six or seven signups a second at most, and a signup that waits more than 2 s answers 503 | not scheduled: ADR 0026 |
+| Organizations are created one at a time | every clone holds Pulse's clone lock (the clone itself rewrites shared objects in `public`): six or seven signups a second at most, and one that waits more than `PULSE_SIGNUP_LOCK_TIMEOUT_MS` (2 s) answers 503. 25 at once: 17 created, 8 answered 503 | not scheduled: ADR 0026 |
+| Anyone can sign up, and each signup creates a schema that stays | only 5 signups a minute per address bound it; every organization adds to the catalog, to `migrate_all`, and about 1.2 ms to beat's tick (1 s budget: about 850 idle organizations) | ticket 5 (P2-5): limits |
+| A well-formed unknown slug is looked up on every request, before the rate limit | one query per such request | subtask 1.3 |
 | The catcher deduplicates by `alert_id` alone | alert ids repeat across organizations, so Globex's alert 1 is dropped as a repeat of Acme's | subtask 1.4: by organization and `alert_id` |
 | Log lines carry the request id, not the organization | a line cannot be tied to its organization without the request | subtask 1.4 |
 | Beat's tick visits every organization in turn | about 1.2 ms per idle organization: the 10 s tick's 1 s budget is reached near 850 | not scheduled: one claim task per organization, ADR 0026 |
 | The assignee has no database constraint | a membership id is only as valid as the services that write it | accepted: `require_active_member` and its tests, ADR 0026; ticket 3 adds the lifecycle check |
 | An unknown slug is Django's HTML 404 | no JSON body for `/t/<unknown>/...` | subtask 1.3 |
-| Deleting an account is not supported | users are deactivated; deleting one in `public` would leave its monitors assigned to a membership with no account | ticket 3: deletion, moving a leaver's monitors first |
+| Accounts cannot be deleted or deactivated yet | deleting one in `public` would leave its monitors assigned to a membership with no account | ticket 3: deletion, moving a leaver's monitors first |
