@@ -44,7 +44,7 @@ help: ## List the targets
 up: ## Start Pulse and shop for development (also the way back from a load test)
 	@test -f .env || { echo "No .env yet: README, Quick start, steps 2 and 3"; exit 1; }
 	docker network inspect pulse-targets > /dev/null 2>&1 || docker network create pulse-targets
-	$(DEV) run --rm api python manage.py migrate
+	$(DEV) run --rm api python manage.py migrate_all
 	$(DEV) up -d --build --wait
 	$(SHOP) up -d --build --wait
 
@@ -52,8 +52,8 @@ down: ## Stop Pulse and shop (database data is kept)
 	$(SHOP) down
 	$(DEV) down
 
-migrate: ## Apply database migrations
-	$(DEV) exec api python manage.py migrate
+migrate: ## Apply migrations to public, the template schema and every organization
+	$(DEV) exec api python manage.py migrate_all
 
 test: ## Run the tests. One file: make test ARGS=tests/monitors/test_retention.py
 	$(DEV) exec api pytest -q -n auto $(ARGS)
@@ -106,7 +106,7 @@ loadtest-up: ## Run api as it is load-tested: make loadtest-up WORKERS=8. Undo: 
 loadtest-seed: ## Create the load-test database, its tables and its data (needed once)
 	$(require_loadtest_api)
 	$(DEV) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -lqt | cut -d "|" -f 1 | grep -qw pulse_loadtest || createdb -U "$$POSTGRES_USER" pulse_loadtest'
-	$(LOADTEST) exec api python manage.py migrate
+	$(LOADTEST) exec api python manage.py migrate_all
 	$(LOADTEST) exec -T api python manage.py shell < loadtest/seed.py
 
 # A file target: Locust is installed the first time, and again when its pins change.
