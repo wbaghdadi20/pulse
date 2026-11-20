@@ -34,7 +34,7 @@ define require_loadtest_api
 endef
 
 .DEFAULT_GOAL := help
-.PHONY: help up down migrate test logs psql explain status rollup \
+.PHONY: help up down migrate seed test logs psql explain status rollup \
 	demo-ready demo-watch demo-break demo-fix demo-alerts \
 	loadtest-up loadtest-seed loadtest loadtest-down
 
@@ -54,6 +54,9 @@ down: ## Stop Pulse and shop (database data is kept)
 
 migrate: ## Apply migrations to public, the template schema and every organization
 	$(DEV) exec api python manage.py migrate_all
+
+seed: ## Create the demo organizations acme and globex, and shop's monitors in acme
+	$(DEV) exec api python manage.py seed_demo
 
 test: ## Run the tests. One file: make test ARGS=tests/monitors/test_retention.py
 	$(DEV) exec api pytest -q -n auto $(ARGS)
@@ -85,7 +88,7 @@ demo-ready: ## Before the demo: is everything it needs running? Each line says o
 	@curl -fs -o /dev/null localhost:8400/ \
 		&& echo "ok    catcher answers" || echo "FAIL  catcher does not answer.      Run: make up"
 	@curl -s localhost:8100/t/$(ORG)/status | python3 -c 'import json, sys; m = json.load(sys.stdin)["monitors"]; d = [x["name"] for x in m if x["state"] == "down"]; print("ok    %d monitors, all up" % len(m) if m and not d else "FAIL  down: %s. Run: make demo-fix, wait 30 s, make demo-ready" % (", ".join(d) or "no public monitor at all"))' 2>/dev/null \
-		|| echo "FAIL  no status page for $(ORG).      Run: make up"
+		|| echo "FAIL  no status page for $(ORG).      Run: make up, then make seed"
 
 demo-watch: ## Follow the worker: failed checks and alerts sent, as they happen (Ctrl+C stops)
 	$(DEV) logs -f --since 1m worker | grep --line-buffered -oE '"message": "(monitor [0-9]+ ok=False[^"]*|alert [0-9]+ sent[^"]*)"'

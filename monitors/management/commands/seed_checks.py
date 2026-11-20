@@ -40,7 +40,7 @@ class Command(BaseCommand):
     def handle(self, *args: Any, **options: Any) -> None:
         org = Organization.objects.filter(slug=options["org"]).first()
         if org is None:
-            raise CommandError(f"No organization {options['org']!r}.")
+            raise CommandError(f"No organization {options['org']!r}: make seed first.")
         with org, transaction.atomic():
             self._seed(options["count"], options["monitors"])
 
