@@ -75,3 +75,8 @@ disallow_untyped_calls = false
 
 [tool.django-stubs]
 django_settings_module = "config.settings_typecheck"
+
+[[tool.mypy.overrides]]
+# Neither ships type hints (no py.typed).
+module = ["django_tenants.*", "tenant_schemas_celery.*"]
+ignore_missing_imports = true
