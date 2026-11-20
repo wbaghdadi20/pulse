@@ -115,3 +115,8 @@ Measured on a copy of the load-test database: 4,666,100 checks of 500 monitors.
 Checks and hours live in each organization's schema ([ADR 0026](0026-schema-per-tenant.md)).
 `roll_up_checks` runs the roll-up, prune and forget in each organization in turn;
 the raw SQL is unchanged and names no schema, so it acts on the one it runs in.
+They are no longer the only raw SQL in the app: `orgs/services.py` adds the
+template's and the advisory locks' statements, `CREATE SCHEMA` and the constraint
+renames after a clone, and `monitors/management/commands/seed_checks.py` its
+insert. Values travel as parameters and identifiers through
+`psycopg.sql.Identifier`.

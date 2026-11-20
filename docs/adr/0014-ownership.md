@@ -73,7 +73,7 @@ A monitor belongs to an organization, and inside it is assigned to a membership
   only.
 - The status page is per organization: its public monitors, whoever they are
   assigned to.
-- Deleting an account no longer deletes its monitors, and is not supported: users
-  are deactivated. Deleting one in `public` would leave its monitors assigned to a
-  membership with no account; ticket 3 brings deletion, moving a leaver's monitors
-  first.
+- Deleting an account no longer deletes its monitors. Accounts cannot be deleted
+  or deactivated yet: deleting one in `public` would leave its monitors assigned
+  to a membership with no account. Ticket 3 brings both, deletion moving a
+  leaver's monitors first.

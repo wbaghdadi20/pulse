@@ -79,7 +79,8 @@ by **cloning** a template schema.
   middleware remembers only slug to schema name. The token's user comes with the
   caller's active membership and its organization in one query, joined by that
   schema name (`orgs.services.active_membership`), and the organization row it
-  returns is `request.tenant`. `orgs.permissions.IsMember` answers 404 to a valid
+  returns is `request.tenant` (for code that needs the organization's row; only a
+  test reads it so far). `orgs.permissions.IsMember` answers 404 to a valid
   token that is not a member of the request's organization, after
   `IsAuthenticated`'s 401.
 - **Tasks**: `config/celery.py` uses `tenant_schemas_celery.app.CeleryApp`, so a
@@ -120,8 +121,9 @@ reviewing it:
    it would hold a migration recorded as not applied, which the next
    `migrate_all` then fails to apply again, stopping at that organization.
    `create_organization` compares the template's `django_migrations` for the
-   tenant apps with the migrations on disk and refuses (`TemplateNotReady`) unless
-   they are equal. A Postgres advisory lock, held exclusively by
+   tenant apps with the migrations on disk and refuses unless they are equal:
+   `TemplateNotReady`, a 503 with `Retry-After: 30`, its detail logged and not
+   answered. A Postgres advisory lock, held exclusively by
    `migrate_template` and shared by every clone, keeps a clone from overlapping a
    template migration. The template is cloned with `NODATA`: it holds no rows, and
    none can spread to every new organization.
@@ -141,9 +143,18 @@ reviewing it:
    inside the transaction the failure has already aborted, so its own error
    replaces the clone's; called directly, the clone's error is the one raised, and
    the transaction's rollback is the cleanup.
-9. **Creating an organization waits 2 s for a lock at most** (`SET LOCAL
-   lock_timeout`), then answers 503 (`OrganizationsBusy`): clones take turns (below),
-   and a signup waiting longer holds a gunicorn worker.
+9. **Organizations are created one at a time, and a signup waits for its turn a
+   bounded time.** Every clone takes a second advisory lock, exclusively, after
+   the shared template lock: concurrent signups queue on that one lock. Without
+   it they collided inside django-tenants' DDL: before the first clone in a
+   database, concurrent ones all ran `CREATE TYPE public.cloneparms` and all but
+   one failed on `pg_type`'s unique index, a 500 (six at once: one created).
+   The wait is `lock_timeout`, set for the transaction with
+   `set_config('lock_timeout', ...)` from `PULSE_SIGNUP_LOCK_TIMEOUT_MS` (default
+   2000, 100 to 30,000: a system check); past it, `OrganizationsBusy`, a 503 with
+   `Retry-After: 5`. A waiting signup holds a gunicorn worker, so the wait is
+   short. The loser of a race for one slug waits for the winner to commit, then
+   finds the slug taken: a 409, not a 503, while the wait fits in the timeout.
 
 ## Measurements
 
@@ -254,23 +265,31 @@ In 1.2 the whole suite runs inside acme, on another stack on the same machine
   tenant (`tests/conftest.py::assignee_problems` checks the rule in every
   organization). Deleting a membership or a user in `public` never touches a
   tenant, so a monitor could be left pointing at a membership whose account is
-  gone: deleting an account is not supported (users are deactivated); ticket 3
-  brings deletion, which moves a leaver's monitors first, and locks the
-  membership (`FOR SHARE`) while assigning.
-- Signups take turns. The clone function is about 4,600 lines of PL/pgSQL in
-  `public`; django-tenants runs `CREATE OR REPLACE` on it, and `DROP TYPE` on its
-  parameter type, before every clone, and the function itself creates and drops
-  two types in `public` on every call. Inside the signup transaction each of
-  those holds a lock until commit: three signups at once, each holding its
-  transaction 2 s, finished after 2.9, 5.6 and 8.5 s. With a signup of about
-  160 ms that is six or seven a second at most, and a waiter past 2 s gets a
-  503. Installing the function once at migration time would not be enough, because
-  of the types the function makes itself; not doing more until signups are that
+  gone: accounts cannot be deleted or deactivated yet. Ticket 3 brings both,
+  deletion moving a leaver's monitors first, and locks the membership
+  (`FOR SHARE`) while assigning.
+- Signups take turns, by Pulse's lock and not by accident. Each clone also
+  rewrites shared objects in `public` inside its transaction (django-tenants runs
+  `CREATE OR REPLACE` on the clone function, about 4,600 lines of PL/pgSQL, and
+  `DROP TYPE` on its parameter type, and the function creates and drops two types
+  of its own on every call), so clones could never run side by side anyway.
+  Installing the function once at migration time would not change that, because
+  of the types the function makes itself. A signup takes about 160 ms, so six or
+  seven a second at most: 25 at once gave 17 created, the slowest after 2.75 s,
+  and 8 answered 503 after waiting 2 s. Not doing more until signups are that
   many.
+- Anyone can sign up, and each signup creates a schema that stays: only the
+  limit of 5 a minute per address (ADR 0016) bounds it. Each organization adds
+  its tables to the catalog, a pass to `migrate_all` and about 1.2 ms to beat's
+  tick, whose 1 s budget lasts to about 850 idle organizations. Limits per
+  account and on organizations are ticket 5's (P2-5).
+- A well-formed slug that does not exist costs one query (and a `SET`) every
+  time, before any rate limit runs: unknown slugs are not remembered. Subtask 1.3
+  revisits it with the 404's JSON body.
 - The template must be migrated with every release, before any signup:
   `migrate_all` does it second, after `public`. `manage.py migrate` alone is the
-  library's `migrate_schemas`, which skips the template; a signup then fails
-  loudly with `TemplateNotReady` instead of cloning a stale schema. With nothing to
+  library's `migrate_schemas`, which skips the template; a signup then answers 503
+  (`TemplateNotReady`, logged) instead of cloning a stale schema. With nothing to
   apply, the template alone took 0.82 s and 100 tenants 3.10 s.
 - Deleting a user no longer deletes their monitors. ADR 0014 is amended.
 - A test that commits (`transaction=True`) must not let pytest-django's flush run
@@ -281,8 +300,11 @@ In 1.2 the whole suite runs inside acme, on another stack on the same machine
   database only for tests marked to use one, so `tests/conftest.py` sets it up
   for these too, and they refuse to run on a database whose name does not start
   with `test_` (`tests/test_test_database.py` runs each alone against a
-  development database that does not exist). A thread opens its own connection,
-  in `public`, and must enter the tenant itself.
+  development database that does not exist). One cut short can still leave rows
+  behind in a kept test database, so before pytest-django migrates it,
+  `tests/conftest.py` deletes every organization but acme and globex, any whose
+  schema is gone, and every account. A thread opens its own connection, in
+  `public`, and must enter the tenant itself.
 - An unknown slug is refused by the middleware with Django's HTML 404, before DRF:
   no JSON body yet (subtask 1.3). The request-id middleware runs first, so the 404
   carries an `X-Request-ID` and is logged.
