@@ -77,10 +77,14 @@ def test_fields_the_server_sets_cannot_be_set_from_the_body(api):
     assert created["latest_check"] is None
 
 
-def test_signup_only_reads_the_email_and_the_password(anon):
+def test_signup_only_reads_what_it_asks_for(anon):
     body = {
         "email": "walid@example.com",
         "password": "correct horse battery",
+        "organization_name": "Initech",
+        "slug": "initech",
+        "role": "admin",
+        "schema_name": "public",
         "id": 4242,
         "created_at": "2001-01-01T00:00:00Z",
         "password_hash": "argon2$forged",
@@ -95,3 +99,6 @@ def test_signup_only_reads_the_email_and_the_password(anon):
     assert user.created_at.year >= 2026
     assert user.check_password("correct horse battery")
     assert not hasattr(user, "is_staff")
+    membership = Membership.objects.select_related("organization").get(user=user)
+    assert membership.role == "owner"
+    assert membership.organization.schema_name == "org_initech"

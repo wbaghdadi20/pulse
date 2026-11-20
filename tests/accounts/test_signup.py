@@ -1,4 +1,5 @@
-"""POST /signup: an account is created once, and its password is never kept or shown."""
+"""POST /signup: an account is created once, and its password is never kept or shown.
+What it creates besides the account, the organization: tests/orgs/test_organizations.py"""
 
 import pytest
 from django.db import IntegrityError, transaction
@@ -7,7 +8,12 @@ from accounts.models import User
 
 pytestmark = pytest.mark.django_db
 
-CREDENTIALS = {"email": "walid@example.com", "password": "correct horse battery"}
+CREDENTIALS = {
+    "email": "walid@example.com",
+    "password": "correct horse battery",
+    "organization_name": "Initech",
+    "slug": "initech",
+}
 
 
 def test_signup_creates_the_account_and_returns_it_without_the_password(anon):
@@ -19,6 +25,7 @@ def test_signup_creates_the_account_and_returns_it_without_the_password(anon):
         "id": user.pk,
         "email": "walid@example.com",
         "created_at": user.created_at.isoformat().replace("+00:00", "Z"),
+        "organization": {"slug": "initech", "name": "Initech", "role": "owner"},
     }
 
 
@@ -40,7 +47,9 @@ def test_the_email_is_stored_in_lowercase(anon):
 def test_an_email_can_sign_up_once_whatever_its_case(anon, email):
     anon.post("/signup", CREDENTIALS, format="json")
 
-    response = anon.post("/signup", {**CREDENTIALS, "email": email}, format="json")
+    response = anon.post(
+        "/signup", {**CREDENTIALS, "email": email, "slug": "other"}, format="json"
+    )
 
     assert response.status_code == 409
     assert User.objects.count() == 1
@@ -64,12 +73,19 @@ def test_a_weak_password_is_rejected(anon, password):
 @pytest.mark.parametrize(
     "body, field",
     [
-        ({"password": CREDENTIALS["password"]}, "email"),
-        ({"email": CREDENTIALS["email"]}, "password"),
+        ({**CREDENTIALS, "email": None}, "email"),
+        ({**CREDENTIALS, "password": None}, "password"),
         ({**CREDENTIALS, "email": "not-an-email"}, "email"),
+        ({**CREDENTIALS, "organization_name": None}, "organization_name"),
+        ({**CREDENTIALS, "organization_name": "x" * 101}, "organization_name"),
+        ({**CREDENTIALS, "slug": None}, "slug"),
+        ({**CREDENTIALS, "slug": "Not A Slug"}, "slug"),
+        ({**CREDENTIALS, "slug": "public"}, "slug"),
     ],
 )
 def test_a_missing_or_malformed_field_is_a_400_on_that_field(anon, body, field):
+    body = {name: value for name, value in body.items() if value is not None}
+
     response = anon.post("/signup", body, format="json")
 
     assert response.status_code == 400
