@@ -33,6 +33,12 @@ define require_loadtest_api
 	|| { echo "api is not running as it is load-tested. First: make loadtest-up"; exit 1; }
 endef
 
+# The load test's seed and users predate organizations; subtask 1.3 adapts them
+# and removes this.
+define until_organizations
+@echo "The load test does not know organizations yet: subtask 1.3 adapts it (LOADTEST.md)"; exit 1
+endef
+
 .DEFAULT_GOAL := help
 .PHONY: help up down migrate seed test logs psql explain status rollup \
 	demo-ready demo-watch demo-break demo-fix demo-alerts \
@@ -107,6 +113,7 @@ loadtest-up: ## Run api as it is load-tested: make loadtest-up WORKERS=8. Undo: 
 	WEB_CONCURRENCY=$(WORKERS) $(LOADTEST) up -d --build --wait api
 
 loadtest-seed: ## Create the load-test database, its tables and its data (needed once)
+	$(until_organizations)
 	$(require_loadtest_api)
 	$(DEV) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -lqt | cut -d "|" -f 1 | grep -qw pulse_loadtest || createdb -U "$$POSTGRES_USER" pulse_loadtest'
 	$(LOADTEST) exec api python manage.py migrate_all
@@ -118,6 +125,7 @@ $(LOCUST): loadtest/requirements.txt
 	loadtest/.venv/bin/pip install --quiet -r loadtest/requirements.txt
 
 loadtest: $(LOCUST) ## Run the load test: make loadtest USERS=50 RATE=5 DURATION=2m
+	$(until_organizations)
 	$(require_loadtest_api)
 	$(LOCUST) -f loadtest/locustfile.py --headless -u $(USERS) -r $(RATE) -t $(DURATION) --host http://localhost:8100
 
