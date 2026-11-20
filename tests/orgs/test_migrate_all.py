@@ -75,7 +75,10 @@ def test_migrating_the_template_holds_its_lock_the_whole_time(monkeypatch):
             cursor.execute(
                 "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'"
                 " AND objid = %s AND mode = 'ExclusiveLock' AND granted"
-                " AND pid <> pg_backend_pid()",
+                " AND pid <> pg_backend_pid()"
+                # pg_locks is the whole server's: other xdist workers' databases too.
+                " AND database = (SELECT oid FROM pg_database"
+                " WHERE datname = current_database())",
                 [services.TEMPLATE_LOCK],
             )
             (held,) = cursor.fetchone()
