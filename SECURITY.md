@@ -96,9 +96,19 @@ the body matches that of an unused id, and nothing changed afterwards. One test
 compares that list with the URL configuration, so a new `/monitors/<id>/...` route
 fails until it is covered. With the owner filter removed, 15 of the 19 tests fail.
 
-The public status page is the deliberate exception: it shows monitors of every
-owner, but only those with `is_public` set (default off), and nothing about the
+The public status page is the deliberate exception: it shows the monitors of every
+member of the organization, but only those with `is_public` set (default off), and nothing about the
 others is read. `tests/monitors/test_status_page.py`.
+
+**Since ticket 1 (organizations).** The same attack across organizations finds
+nothing to read: each organization's monitors are in its own Postgres schema, and
+a request under `/t/<slug>/` runs in that schema only. A valid token that is not
+a member of the organization gets 404 before any monitor is looked up, the same
+as an unknown slug. Inside one organization the filter above is by the caller's
+membership (`assignee_id`) instead of `owner_id`, and names are unique in the
+organization: a 409 tells a member that a colleague uses a name, and nothing
+outside it. `tests/orgs/test_tenancy.py`, `tests/monitors/test_ownership.py`,
+[ADR 0026](docs/adr/0026-schema-per-tenant.md).
 
 ## 3. Making Pulse call internal addresses (SSRF)
 
@@ -233,6 +243,13 @@ send back an object it read.
 `created_at`, `last_checked_at` or `next_check_at` ever becomes writable, on
 create or on edit, and checks the same for `/signup`.
 
+**Since ticket 1.** `owner` became `assignee`, a membership, and is set from the
+caller's membership in the same way; the test sends `assignee`, `assignee_id`,
+`owner` and the rest. Signup ignores a `role` or a `schema_name` in the body: the
+role is always `owner` and the schema comes from the slug. A membership id that
+reaches a service some other way is checked (`require_active_member`), because no
+database constraint crosses from a tenant schema to `public`.
+
 ## 6. SQL injection
 
 **Attack.** Input that ends a string in a SQL statement and continues as SQL.
@@ -254,6 +271,15 @@ does Pulse's one raw statement (`seed_checks`).
 **The test.** `tests/monitors/test_sql_injection.py` holds both versions and runs
 the same inputs through each. Through the API, the attack string is stored and
 returned as a plain monitor name.
+
+**Since ticket 1.** A slug becomes part of SQL that cannot take parameters: a
+schema name in `CREATE SCHEMA`, `SET search_path` and `ALTER TABLE ... RENAME`.
+So a slug is checked before any SQL runs (lowercase letters, digits and single
+hyphens, 3 to 40 characters, not reserved), and every identifier is quoted by
+`psycopg.sql.Identifier`, never formatted into the text.
+`tests/orgs/test_organizations.py::test_a_hostile_slug_is_refused_before_any_sql`
+sends `x"; DROP SCHEMA public CASCADE; --` and others through the service and
+`/signup`, and asserts that no query ran at all.
 
 ## Secrets
 
@@ -285,6 +311,8 @@ own `GITHUB_TOKEN`, and only the publishing job has `packages: write`.
 | ----- | ------ |
 | A token cannot be revoked | a stolen token works until it expires (one hour by default). Deleting the account does stop it |
 | Signup answers 409 for a registered email | it reveals who has an account. Hiding that needs email verification |
+| Signup answers 409 for a taken slug | it reveals that an organization exists. Slugs are not secret anyway: every organization's status page is public |
+| A tenant row's membership id has no database constraint | Postgres would accept a dangling or foreign id; only the services refuse one ([ADR 0026](docs/adr/0026-schema-per-tenant.md)) |
 | Redirects are not followed | a monitor of a URL that redirects records the 3xx. Following them safely means judging every hop; see [ADR 0015](docs/adr/0015-ssrf-guard.md) |
 | Creating a monitor for an internal name answers 400, an unknown name 201 | the difference tells a user which internal names resolve |
 | An allow-listed hostname is trusted whatever it resolves to | whoever controls DNS for `flaky` or `shop` inside the network controls where those checks go |
