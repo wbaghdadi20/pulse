@@ -145,8 +145,8 @@ def test_another_organization_can_use_the_same_name(monitor, globex):
 
 @pytest.mark.xfail(
     strict=True,
-    reason="Deleting an account is not supported: users are deactivated. Deletion, "
-    "which moves a leaver's monitors first, is ticket 3's (later.md).",
+    reason="Accounts cannot be deleted or deactivated yet. Deletion, which moves a "
+    "leaver's monitors first, is ticket 3's (later.md).",
 )
 def test_deleting_an_account_leaves_no_monitor_assigned_to_a_dead_membership(
     monitor, user

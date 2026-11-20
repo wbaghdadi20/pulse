@@ -4,6 +4,7 @@ A new organization's schema is cloned from a template schema that `make migrate`
 keeps up to date, inside the caller's transaction: why, docs/adr/0026.
 """
 
+import logging
 from functools import cache
 from typing import LiteralString
 
@@ -34,9 +35,11 @@ SLUG_CONSTRAINTS = {"uq_organization_slug", "uq_organization_schema_name"}
 # Held exclusively while the template is migrated and shared by every clone, so a
 # clone never copies a template halfway through a migration.
 TEMPLATE_LOCK = 7_011_984
-# How long creating an organization waits for a lock before answering 503: clones
-# take turns (docs/adr/0026), and a waiting signup holds a gunicorn worker.
-LOCK_TIMEOUT: LiteralString = "2s"
+# Held exclusively by every clone, after TEMPLATE_LOCK: organizations are created
+# one at a time, waiting on this one lock (docs/adr/0026).
+CLONE_LOCK = 7_011_985
+
+log = logging.getLogger(__name__)
 
 
 def check_slug(slug: str) -> None:
@@ -53,10 +56,15 @@ def create_organization(name: str, slug: str) -> Organization:
     with in_public(), transaction.atomic():
         try:
             with connection.cursor() as cursor:
-                cursor.execute("SET LOCAL lock_timeout = '" + LOCK_TIMEOUT + "'")
+                # Until the end of the transaction: any wait past it is a 503.
+                cursor.execute(
+                    "SELECT set_config('lock_timeout', %s, true)",
+                    [f"{settings.PULSE_SIGNUP_LOCK_TIMEOUT_MS}ms"],
+                )
                 cursor.execute(
                     "SELECT pg_advisory_xact_lock_shared(%s)", [TEMPLATE_LOCK]
                 )
+                cursor.execute("SELECT pg_advisory_xact_lock(%s)", [CLONE_LOCK])
             check_template()
             org = _insert(name, slug)
             org.create_schema(verbosity=0)
@@ -149,14 +157,19 @@ def check_template() -> None:
     template behind, the schema would lack one; from one ahead, it would hold one
     recorded as not applied, which the next migrate_all fails to apply again."""
     applied = _template_migrations()
-    if applied is None:
-        raise TemplateNotReady(f"No {TEMPLATE_SCHEMA} schema: make migrate")
     on_disk = _tenant_migrations()
-    if applied != on_disk:
-        raise TemplateNotReady(
+    if applied is None:
+        problem = f"No {TEMPLATE_SCHEMA} schema: make migrate"
+    elif applied != on_disk:
+        problem = (
             f"{TEMPLATE_SCHEMA} lacks {sorted(on_disk - applied)} and has "
-            f"{sorted(applied - on_disk)} that this code does not: make migrate"
+            f"{sorted(applied - on_disk)} that this code does not: make migrate, "
+            "with the code that is deployed"
         )
+    else:
+        return
+    log.error("organization not created: %s", problem)
+    raise TemplateNotReady(problem)
 
 
 def template_is_current() -> bool:

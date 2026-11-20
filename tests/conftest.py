@@ -21,6 +21,7 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import httpx
+import psycopg
 import pytest
 import redis
 from django.apps import apps
@@ -31,13 +32,14 @@ from django.db import connection
 from django.test.utils import setup_databases, teardown_databases
 from django.urls import Resolver404, resolve
 from hypothesis import settings as hypothesis_settings
+from psycopg import sql
 from rest_framework.test import APIClient
 
 from accounts import tokens
 from accounts.models import User
 from monitors import clients, ssrf
 from monitors.models import Monitor
-from orgs import middleware
+from orgs import middleware, slugs
 from orgs import services as orgs
 from orgs.models import Membership, Organization
 from orgs.tenancy import current_schema, in_organization
@@ -63,6 +65,61 @@ MONITOR_PAYLOAD = {
 }
 OWNER_EMAIL = "owner@example.com"
 TENANT_SLUGS = ("acme", "globex")
+
+
+@pytest.fixture(scope="session")
+def django_db_modify_db_settings(django_db_modify_db_settings_parallel_suffix) -> None:
+    """pytest-django's, then: a kept test database that an interrupted run left
+    inconsistent is put right before pytest-django migrates it."""
+    repair_kept_test_database()
+
+
+def repair_kept_test_database() -> None:
+    """Between runs a test database holds public, the template, acme and globex, and
+    no account. A committing test cut short can leave more: an organization whose
+    schema is gone (migrating it fails), or one with its schema and its owner. Both
+    go, through a connection of its own: Django's is not on the test database yet."""
+    db = connection.settings_dict
+    name = connection.creation._get_test_db_name()  # type: ignore[attr-defined]
+    assert name.startswith("test_"), name
+    try:
+        conn = psycopg.connect(
+            dbname=name,
+            user=db["USER"],
+            password=db["PASSWORD"],
+            host=db["HOST"],
+            port=db["PORT"],
+            autocommit=True,
+        )
+    except psycopg.OperationalError:
+        return  # not created yet
+    keep = ["public", *(slugs.schema_name(slug) for slug in TENANT_SLUGS)]
+    with conn:
+        if conn.execute("SELECT to_regclass('public.organizations')").fetchone() == (
+            None,
+        ):
+            return
+        for (schema,) in conn.execute(
+            "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'org\\_%%'"
+            " AND nspname <> ALL(%s)",
+            [keep],
+        ).fetchall():
+            conn.execute(
+                sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema))
+            )
+        conn.execute("DELETE FROM memberships")
+        conn.execute("DELETE FROM users")
+        conn.execute(
+            "DELETE FROM organization_domains d USING organizations o"
+            " WHERE d.tenant_id = o.id AND (o.schema_name <> ALL(%(keep)s)"
+            " OR o.schema_name NOT IN (SELECT nspname FROM pg_namespace))",
+            {"keep": keep},
+        )
+        conn.execute(
+            "DELETE FROM organizations o WHERE o.schema_name <> ALL(%(keep)s)"
+            " OR o.schema_name NOT IN (SELECT nspname FROM pg_namespace)",
+            {"keep": keep},
+        )
 
 
 def on_test_database() -> bool:
@@ -189,10 +246,10 @@ def committed(django_db_setup, django_db_blocker) -> Iterator[Organization]:
 
 
 @pytest.fixture
-def template_being_migrated(monkeypatch) -> Iterator[None]:
+def template_being_migrated(settings) -> Iterator[None]:
     """Another connection holds the template's lock, as migrate_template does. A
     clone gives up after 0.2 s here, not the 2 s of production."""
-    monkeypatch.setattr(orgs, "LOCK_TIMEOUT", "200ms")
+    settings.PULSE_SIGNUP_LOCK_TIMEOUT_MS = 200
     taken, done = threading.Event(), threading.Event()
 
     def hold() -> None:

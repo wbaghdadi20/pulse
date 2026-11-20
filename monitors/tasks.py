@@ -4,7 +4,6 @@ Arguments cross the broker as JSON, so tasks take ids, never model instances, an
 load the row fresh: it may have changed since the message was queued.
 """
 
-from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -13,8 +12,7 @@ from celery.utils.log import get_task_logger
 from django.conf import settings
 
 from core.system_checks import MAX_ALERT_ATTEMPTS
-from orgs import services as orgs
-from orgs.tenancy import current_schema
+from orgs.tenancy import current_schema, in_each_organization
 
 from . import alerting, locks, retention, services
 from .models import MAX_TIMEOUT_S, Alert, Monitor
@@ -27,23 +25,6 @@ log = get_task_logger(__name__)
 # never expire under a check that is still running.
 CHECK_TIME_LIMIT_S = 2 * MAX_TIMEOUT_S + 15
 CHECK_LOCK_TTL_S = CHECK_TIME_LIMIT_S + 15
-
-
-def in_each_organization[T](task: str, work: Callable[[], T]) -> list[T]:
-    """Run `work` in every organization's schema. One failing does not stop the others:
-    it is logged with its slug, and the task fails at the end, naming them all."""
-    results: list[T] = []
-    failed: list[str] = []
-    for org in orgs.active_tenants():
-        try:
-            with org:
-                results.append(work())
-        except Exception:
-            log.exception("%s failed in %s", task, org.slug)
-            failed.append(org.slug)
-    if failed:
-        raise RuntimeError(f"{task} failed in {', '.join(failed)}")
-    return results
 
 
 @shared_task
@@ -104,7 +85,9 @@ def roll_up_checks() -> None:
         "roll_up_checks",
         lambda: (retention.roll_up(), retention.prune(), retention.forget()),
     )
-    rolled, checks, hours = [sum(n) for n in zip(*done, strict=True)] or [0, 0, 0]
+    rolled = sum(counts[0] for counts in done)
+    checks = sum(counts[1] for counts in done)
+    hours = sum(counts[2] for counts in done)
     log.info(
         "rolled up %d monitor hours, deleted %d checks and %d old hours",
         rolled,

@@ -108,8 +108,10 @@ def test_a_template_that_is_behind_the_code_is_never_cloned(monkeypatch):
         lambda: on_disk | {("monitors", "9999_not_applied")},
     )
 
-    with pytest.raises(TemplateNotReady, match="lacks"):
+    with pytest.raises(TemplateNotReady) as refused:
         services.create_organization("Initech", "initech")
+
+    assert "lacks [('monitors', '9999_not_applied')]" in refused.value.detail
 
     assert nothing_was_created()
 
@@ -120,8 +122,10 @@ def test_a_template_that_is_ahead_of_the_code_is_never_cloned(monkeypatch):
     older_code = services._tenant_migrations() - {newest}
     monkeypatch.setattr(services, "_tenant_migrations", lambda: older_code)
 
-    with pytest.raises(TemplateNotReady, match="has"):
+    with pytest.raises(TemplateNotReady) as refused:
         services.create_organization("Initech", "initech")
+
+    assert f"has [{newest!r}]" in refused.value.detail
 
     assert nothing_was_created()
 

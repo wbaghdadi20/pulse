@@ -65,6 +65,9 @@ TENANT_REJECT_EXISTING_SCHEMA = True
 TENANT_LIMIT_SET_CALLS = True
 # Tenants are migrated oldest first, so a failure always stops at the same one.
 TENANT_MIGRATION_ORDER = ["id"]
+# How long creating an organization waits for its turn before answering 503.
+# Organizations are created one at a time, and a waiting signup holds a worker.
+PULSE_SIGNUP_LOCK_TIMEOUT_MS = env_int("PULSE_SIGNUP_LOCK_TIMEOUT_MS", default=2000)
 
 MIDDLEWARE = [
     # First, so that what the others answer and log carries the id too.

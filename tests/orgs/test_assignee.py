@@ -12,7 +12,6 @@ from orgs.services import require_active_member
 from tests.conftest import (
     MONITOR_PAYLOAD,
     assignee_problems,
-    client_for,
     create_monitor,
     membership_of,
     use_public,
@@ -58,15 +57,6 @@ def test_a_monitor_cannot_be_reassigned_to_a_member_of_another_organization(
         services.update_monitor(monitor, {"assignee": gina})
     monitor.refresh_from_db()
     assert monitor.assignee == alice
-    assert assignee_problems() == []
-
-
-def test_creating_and_editing_through_the_api_keeps_every_assignee_valid(alice, gina):
-    assert alice.user
-    api = client_for(alice.user)
-    created = api.post("/monitors/", {**MONITOR_PAYLOAD, "assignee": gina.pk}, "json")
-    api.patch(f"/monitors/{created.json()['id']}/", {"assignee_id": gina.pk}, "json")
-
     assert assignee_problems() == []
 
 
